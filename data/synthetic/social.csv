@@ -1,0 +1,54 @@
+post_id,case_id,handle,platform,timestamp,activity_type,target_handle,content,ip_address,source_file
+SOC-00001,CASE_001,@subject_b,synthetic-social,2026-08-16T00:00:00+00:00,POST,,Routine synthetic post,203.0.113.12,social.csv
+SOC-00002,CASE_001,@subject_b,synthetic-social,2026-08-17T00:00:00+00:00,POST,,Routine synthetic post,203.0.113.12,social.csv
+SOC-00003,CASE_001,@subject_b,synthetic-social,2026-08-18T00:00:00+00:00,POST,,Routine synthetic post,203.0.113.12,social.csv
+SOC-00004,CASE_002,@subject_d,synthetic-social,2026-08-15T09:21:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00005,CASE_002,@subject_d,synthetic-social,2026-08-15T13:25:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00006,CASE_002,@subject_d,synthetic-social,2026-08-15T17:22:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00007,CASE_002,@subject_d,synthetic-social,2026-08-15T21:16:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00008,CASE_002,@subject_d,synthetic-social,2026-08-16T01:26:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00009,CASE_002,@subject_d,synthetic-social,2026-08-16T05:25:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00010,CASE_002,@subject_d,synthetic-social,2026-08-16T09:28:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00011,CASE_002,@subject_d,synthetic-social,2026-08-16T13:25:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00012,CASE_002,@subject_d,synthetic-social,2026-08-16T17:22:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00013,CASE_002,@subject_d,synthetic-social,2026-08-16T21:18:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00014,CASE_002,@subject_d,synthetic-social,2026-08-17T01:24:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00015,CASE_002,@subject_d,synthetic-social,2026-08-17T05:16:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00016,CASE_002,@subject_d,synthetic-social,2026-08-17T09:23:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00017,CASE_002,@subject_d,synthetic-social,2026-08-17T13:22:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00018,CASE_002,@subject_d,synthetic-social,2026-08-17T17:22:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00019,CASE_002,@subject_d,synthetic-social,2026-08-17T21:25:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00020,CASE_002,@subject_d,synthetic-social,2026-08-18T01:23:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00021,CASE_002,@subject_d,synthetic-social,2026-08-18T05:23:00+00:00,POST,,Synthetic activity following transfer,203.0.113.14,social.csv
+SOC-00022,CASE_003,@subject_f,synthetic-social,2026-08-15T18:14:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00023,CASE_003,@subject_f,synthetic-social,2026-08-16T18:19:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00024,CASE_003,@subject_f,synthetic-social,2026-08-17T18:20:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00025,CASE_003,@subject_f,synthetic-social,2026-08-18T18:24:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00026,CASE_003,@subject_f,synthetic-social,2026-08-19T18:21:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00027,CASE_003,@subject_f,synthetic-social,2026-08-20T18:25:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00028,CASE_003,@subject_f,synthetic-social,2026-08-21T18:20:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00029,CASE_003,@subject_f,synthetic-social,2026-08-22T18:15:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00030,CASE_003,@subject_f,synthetic-social,2026-08-23T18:21:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00031,CASE_003,@subject_f,synthetic-social,2026-08-24T18:18:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00032,CASE_003,@subject_f,synthetic-social,2026-08-25T18:20:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00033,CASE_003,@subject_f,synthetic-social,2026-08-26T18:25:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00034,CASE_003,@subject_f,synthetic-social,2026-08-27T18:21:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00035,CASE_003,@subject_f,synthetic-social,2026-08-28T18:18:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00036,CASE_003,@subject_f,synthetic-social,2026-08-29T18:19:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00037,CASE_003,@subject_f,synthetic-social,2026-08-30T18:18:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00038,CASE_003,@subject_f,synthetic-social,2026-08-31T18:25:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00039,CASE_003,@subject_f,synthetic-social,2026-09-01T18:20:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00040,CASE_003,@subject_f,synthetic-social,2026-09-02T18:22:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00041,CASE_003,@subject_f,synthetic-social,2026-09-03T18:20:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00042,CASE_003,@subject_f,synthetic-social,2026-09-04T18:19:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00043,CASE_003,@subject_f,synthetic-social,2026-09-05T18:22:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00044,CASE_003,@subject_f,synthetic-social,2026-09-06T18:20:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00045,CASE_003,@subject_f,synthetic-social,2026-09-07T18:15:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00046,CASE_003,@subject_f,synthetic-social,2026-09-08T18:22:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00047,CASE_003,@subject_f,synthetic-social,2026-09-09T18:25:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00048,CASE_003,@subject_f,synthetic-social,2026-09-10T18:17:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00049,CASE_003,@subject_f,synthetic-social,2026-09-11T18:21:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00050,CASE_003,@subject_f,synthetic-social,2026-09-12T18:19:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00051,CASE_003,@subject_f,synthetic-social,2026-09-13T18:14:00+00:00,POST,,Daily reconciliation note,203.0.113.16,social.csv
+SOC-00052,CASE_005,@subject_a,synthetic-social,2026-08-15T13:00:00+00:00,LOGIN,,,203.0.113.11,social.csv
+SOC-00053,CASE_007,,synthetic-social,2026-08-15T10:10:00+00:00,POST,,Orphaned record with no actor,,social.csv

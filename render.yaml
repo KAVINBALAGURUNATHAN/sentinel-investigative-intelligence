@@ -1,0 +1,20 @@
+# SENTINEL — Render deployment config
+services:
+  - type: web
+    name: sentinel-backend
+    env: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ENABLE_SEMANTIC_EMBEDDINGS
+        value: "false"
+      - key: FRONTEND_URL
+        value: https://sentinel-mvp.vercel.app

@@ -1,0 +1,68 @@
+{
+  "_meta": {
+    "generator": "data/synthetic/generate_datasets.py",
+    "seed": 20260815,
+    "warning": "Synthetic benchmark data only. Not real investigative material.",
+    "note": "expected_* fields are the labels the System Validation page scores against."
+  },
+  "CASE_001": {
+    "scenario": "Normal behaviour",
+    "expected_alert": false,
+    "expected_quarantine": 0,
+    "expected_entity_links": [],
+    "rationale": "Routine, well-spaced activity; no cross-domain clustering."
+  },
+  "CASE_002": {
+    "scenario": "Cross-domain anomaly",
+    "expected_alert": true,
+    "expected_quarantine": 0,
+    "expected_pattern": "CALL_TRANSFER_SOCIAL",
+    "expected_occurrences": 18,
+    "expected_entity_links": [],
+    "rationale": "CALL->TRANSFER->SOCIAL repeats inside 30 min with no comparable history."
+  },
+  "CASE_003": {
+    "scenario": "Repeated legitimate behaviour",
+    "expected_alert": false,
+    "expected_quarantine": 0,
+    "expected_pattern": "CALL_TRANSFER_SOCIAL",
+    "expected_occurrences": 30,
+    "expected_entity_links": [],
+    "rationale": "Same shape as CASE_002 but it is the subject's 30-day norm; a subject-specific baseline should absorb it. False-positive control."
+  },
+  "CASE_004": {
+    "scenario": "Suspicious network structure",
+    "expected_alert": true,
+    "expected_quarantine": 0,
+    "expected_bridge_entity": "E-105",
+    "expected_entity_links": [],
+    "rationale": "E-105 bridges two otherwise disconnected clusters on low call volume."
+  },
+  "CASE_005": {
+    "scenario": "Entity resolution",
+    "expected_alert": false,
+    "expected_quarantine": 0,
+    "expected_entity_links": [
+      [
+        "9999900101",
+        "9999900901",
+        "shared IMEI + public IP"
+      ]
+    ],
+    "rationale": "Two MSISDNs share one handset and public IP; should resolve to E-101."
+  },
+  "CASE_006": {
+    "scenario": "Corrupted input",
+    "expected_alert": false,
+    "expected_quarantine": 5,
+    "expected_entity_links": [],
+    "rationale": "Unparseable timestamp, negative duration, replacement char, non-numeric and negative amounts. Quarantine, never drop."
+  },
+  "CASE_007": {
+    "scenario": "Missing data",
+    "expected_alert": false,
+    "expected_quarantine": 4,
+    "expected_entity_links": [],
+    "rationale": "Absent actor / timestamp / amount fields across three domains."
+  }
+}
