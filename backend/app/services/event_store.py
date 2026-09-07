@@ -229,13 +229,33 @@ def store_entities(conn: sqlite3.Connection, case_id: str,
     identifier lands as UNKNOWN and the Neo4j projection cannot label a phone
     differently from a bank account.
     """
-    # identifier value → type, taken from the records that observed it
+    # identifier value → type, taken from the records that observed it.
+    #
+    # Actor and target carry the parties, but a CDR row also names the handset
+    # (IMEI), the SIM (IMSI) and, for IPDR and banking, the address and UPI
+    # handle. Those are identifiers the case genuinely observed, so they are
+    # collected too — an investigator asking "which handset made this call?"
+    # must be able to see it.
+    ATTRIBUTE_IDENTIFIERS = {
+        "imei": "IMEI", "imsi": "IMSI", "device": "DEVICE",
+        "public_ip": "IP", "ip_address": "IP",
+        "payer_upi": "UPI", "payee_upi": "UPI", "upi": "UPI",
+    }
+
     observed_types: dict[str, str] = {}
     for event in events:
+        # A record that failed validation must not assert that an identifier
+        # belongs to anyone — the same rule the graph projection applies.
+        if getattr(event, "quarantined", False):
+            continue
         for side in (getattr(event, "actor", None), getattr(event, "target", None)):
             if side and side.value:
                 observed_types.setdefault(
                     side.value, getattr(side.type, "value", str(side.type)))
+        for key, itype in ATTRIBUTE_IDENTIFIERS.items():
+            value = (getattr(event, "attributes", None) or {}).get(key)
+            if value:
+                observed_types.setdefault(str(value), itype)
 
     # never downgrade a type already established for this case
     known_types = {
@@ -246,8 +266,15 @@ def store_entities(conn: sqlite3.Connection, case_id: str,
             (case_id,)).fetchall()
     }
 
+    # Case isolation: the declared register is loaded for every case so that
+    # resolution can use it, but only identifiers this case's own records
+    # actually contain may be stored against it. Without this, a case whose
+    # records were all quarantined still lists every identifier in the
+    # register, which reads as evidence that it is not.
     rows = []
     for identifier in registry._by_identifier:  # noqa: SLF001 - same package boundary
+        if identifier not in observed_types:
+            continue
         entity = registry.resolve(identifier)
         itype = (known_types.get(identifier)
                  or observed_types.get(identifier)
@@ -579,7 +606,7 @@ def entity_registry(conn: sqlite3.Connection, case_id: str) -> dict[str, Any]:
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     for row in conn.execute(
         "SELECT entity_id, identifier_type, identifier_value, confidence, origin "
-        "FROM entity_identifiers WHERE case_id IN (?, 'ALL') "
+        "FROM entity_identifiers WHERE case_id = ? "
         "ORDER BY identifier_type, identifier_value", (case_id,)).fetchall():
         key = (row["identifier_value"], row["entity_id"])
         if key in seen and row["identifier_type"] == "UNKNOWN":
@@ -596,12 +623,32 @@ def entity_registry(conn: sqlite3.Connection, case_id: str) -> dict[str, Any]:
         }
     rows.extend(seen.values())
 
+    people = sum(1 for r in rows if r["kind"] == "PERSON")
+    total, quarantined = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(quarantined), 0) FROM events WHERE case_id = ?",
+        (case_id,)).fetchone()
+
+    reason = None
+    if people == 0:
+        if total == 0:
+            reason = "No records have been ingested for this case yet."
+        elif quarantined == total:
+            reason = (f"All {total} records for this case failed validation and were "
+                      f"quarantined, so no entities could be resolved from them. The "
+                      f"records are retained and can be reviewed on the Evidence page.")
+        else:
+            reason = ("Records exist but none carry an identifier that resolves to a "
+                      "person.")
+
     return {
         "case_id": case_id,
         "counts": {
-            "people": sum(1 for r in rows if r["kind"] == "PERSON"),
+            "people": people,
             "identifiers": sum(1 for r in rows if r["kind"] == "IDENTIFIER"),
+            "records": total,
+            "quarantined": quarantined,
         },
+        "no_people_reason": reason,
         "entities": rows,
     }
 

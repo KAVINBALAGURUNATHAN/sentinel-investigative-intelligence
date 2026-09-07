@@ -88,8 +88,8 @@ export default function App() {
   const page = (() => {
     const shared = { caseId, onNavigate: go, onOpenEntity: openEntity, onOpenEvidence: openEvidence }
     switch (route.page) {
-      case 'cases': return <Cases caseId={caseId} onSelectCase={setCaseId} />
-      case 'entities': return <Entities {...shared} />
+      case 'cases': return <Cases caseId={caseId} onSelectCase={setCaseId} onNavigate={go} />
+      case 'entities': return <Entities {...shared} onSelectCase={setCaseId} />
       case 'entity': return <EntityDetail {...shared} entityId={route.param} />
       case 'network': return <Network {...shared} />
       case 'timeline': return <Timeline {...shared} />

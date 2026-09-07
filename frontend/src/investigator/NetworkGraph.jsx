@@ -16,32 +16,32 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as d3 from 'd3'
 
 const NODE_STYLE = {
-  Person: { r: 13, fill: '#c9d4e0', label: 'Person' },
-  Phone: { r: 8, fill: '#5aa9e6', label: 'Phone' },
-  Device: { r: 8, fill: '#9d8df1', label: 'Device' },
-  Sim: { r: 7, fill: '#8b7fd6', label: 'SIM' },
-  BankAccount: { r: 8, fill: '#4bb45f', label: 'Bank account' },
-  UpiHandle: { r: 7, fill: '#3f9c52', label: 'UPI' },
-  SocialAccount: { r: 8, fill: '#e0a223', label: 'Social' },
-  IpAddress: { r: 7, fill: '#7d8fa3', label: 'IP address' },
-  Identifier: { r: 6, fill: '#6b7d92', label: 'Other' },
+  Person: { r: 13, fill: '#46566a', label: 'Person' },
+  Phone: { r: 8, fill: '#1f6fb2', label: 'Phone' },
+  Device: { r: 8, fill: '#6a4b9c', label: 'Device' },
+  Sim: { r: 7, fill: '#7a63b0', label: 'SIM' },
+  BankAccount: { r: 8, fill: '#14663f', label: 'Bank account' },
+  UpiHandle: { r: 7, fill: '#1a7a4a', label: 'UPI' },
+  SocialAccount: { r: 8, fill: '#8a5a00', label: 'Social' },
+  IpAddress: { r: 7, fill: '#66768a', label: 'IP address' },
+  Identifier: { r: 6, fill: '#66768a', label: 'Other' },
 }
 
 const EDGE_STYLE = {
-  OWNS: { stroke: '#3d4c61', dash: '3,3', kind: 'resolution' },
-  USES: { stroke: '#3d4c61', dash: '3,3', kind: 'resolution' },
-  IDENTIFIES: { stroke: '#3d4c61', dash: '3,3', kind: 'resolution' },
-  CALLED: { stroke: '#5aa9e6', dash: null, kind: 'observation' },
-  MESSAGED: { stroke: '#5aa9e6', dash: null, kind: 'observation' },
-  TRANSFERRED: { stroke: '#4bb45f', dash: null, kind: 'observation' },
-  CONNECTED_FROM: { stroke: '#9d8df1', dash: null, kind: 'observation' },
-  LOGGED_IN_FROM: { stroke: '#9d8df1', dash: null, kind: 'observation' },
-  POSTED: { stroke: '#e0a223', dash: null, kind: 'observation' },
-  CONNECTED_TO: { stroke: '#e0a223', dash: null, kind: 'observation' },
+  OWNS: { stroke: '#b3c0cf', dash: '3,3', kind: 'resolution' },
+  USES: { stroke: '#b3c0cf', dash: '3,3', kind: 'resolution' },
+  IDENTIFIES: { stroke: '#b3c0cf', dash: '3,3', kind: 'resolution' },
+  CALLED: { stroke: '#1f6fb2', dash: null, kind: 'observation' },
+  MESSAGED: { stroke: '#1f6fb2', dash: null, kind: 'observation' },
+  TRANSFERRED: { stroke: '#14663f', dash: null, kind: 'observation' },
+  CONNECTED_FROM: { stroke: '#6a4b9c', dash: null, kind: 'observation' },
+  LOGGED_IN_FROM: { stroke: '#6a4b9c', dash: null, kind: 'observation' },
+  POSTED: { stroke: '#8a5a00', dash: null, kind: 'observation' },
+  CONNECTED_TO: { stroke: '#8a5a00', dash: null, kind: 'observation' },
 }
 
 const styleFor = label => NODE_STYLE[label] || NODE_STYLE.Identifier
-const edgeStyleFor = rel => EDGE_STYLE[rel] || { stroke: '#3d4c61', dash: null, kind: 'observation' }
+const edgeStyleFor = rel => EDGE_STYLE[rel] || { stroke: '#b3c0cf', dash: null, kind: 'observation' }
 
 export default function NetworkGraph({ graph, onSelect, selected, filters }) {
   const svgRef = useRef(null)
@@ -138,14 +138,14 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
       .attr('r', d => styleFor(d.label).r)
       .attr('fill', d => styleFor(d.label).fill)
       .attr('fill-opacity', 0.9)
-      .attr('stroke', d => (d.id === selected ? '#4a9eff' : '#0b0f14'))
+      .attr('stroke', d => (d.id === selected ? '#1f4e79' : '#ffffff'))
       .attr('stroke-width', d => (d.id === selected ? 2.5 : 1.5))
 
     node.filter(d => d.label === 'Person').append('text')
       .text(d => d.id)
       .attr('text-anchor', 'middle').attr('dy', 26)
       .attr('font-size', 10).attr('font-family', 'ui-monospace, monospace')
-      .attr('fill', '#9fb0c3').attr('pointer-events', 'none')
+      .attr('fill', '#14202f').attr('pointer-events', 'none')
 
     // interactions
     const tip = d3.select(tipRef.current)
@@ -245,7 +245,7 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
 
       <div className="graph-overlay graph-legend">
         <div style={{ fontSize: 9.5, letterSpacing: '.1em', textTransform: 'uppercase',
-          color: '#6b7d92', marginBottom: 5 }}>Node types</div>
+          color: '#66768a', marginBottom: 5 }}>Node types</div>
         {[...new Set(graph.nodes.map(n => n.label))].sort().map(label => (
           <div className="legend-row" key={label}>
             <span className="legend-swatch" style={{ background: styleFor(label).fill }} />
@@ -254,12 +254,12 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
         ))}
         <div style={{ borderTop: '1px solid #232d3b', margin: '6px 0 5px' }} />
         <div className="legend-row">
-          <span className="legend-line" style={{ borderColor: '#5aa9e6' }} />
+          <span className="legend-line" style={{ borderColor: '#1f6fb2' }} />
           Observed activity
         </div>
         <div className="legend-row">
           <span className="legend-line"
-            style={{ borderColor: '#3d4c61', borderTopStyle: 'dashed' }} />
+            style={{ borderColor: '#b3c0cf', borderTopStyle: 'dashed' }} />
           Resolution (inferred)
         </div>
       </div>

@@ -18,13 +18,20 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
+from fastapi.responses import Response
 
-from app.analytics.ccc_engine import PATTERNS, analyse_case
+from app.analytics.ccc_engine import PATTERNS, analyse_case, diagnose_case
 from app.analytics.network_metrics import detect_bridges, network_summary
 from app.services import event_store as store
+from app.services.case_report import (
+    build_audit_bundle,
+    generate_court_pack,
+    generate_investigation_report,
+)
 from app.services.entity_resolution import resolve_case
 from app.services.graph_projection import clear_case, fetch_case_graph, project_case
 from app.services.normalizers import NORMALIZERS, ingestion_summary, normalize_csv_bytes
@@ -215,6 +222,7 @@ def get_patterns(
         events = store.load_unified_events(conn, case_id)
         if not events:
             raise HTTPException(404, f"No ingested data for case '{case_id}'.")
+        diagnostics = diagnose_case(events, window_minutes=window_minutes)
         results = analyse_case(events, window_minutes=window_minutes,
                                permutations=permutations)
         bridges = detect_bridges(events)
@@ -228,6 +236,17 @@ def get_patterns(
         "permutations": permutations,
         "results": [r.as_dict() for r in tested],
         "network_findings": [f.as_dict() for f in bridges],
+        # Always present: an empty result must explain itself with the same
+        # numbers that produced it.
+        "diagnostics": diagnostics,
+        "analysis_status": (
+            "COMPLETED" if tested else
+            "SKIPPED_NO_OCCURRENCES"),
+        "analysis_note": (
+            None if tested else
+            "Statistical analysis skipped because no valid pattern occurrences "
+            "were detected. The permutation test was not run; no p-value or "
+            "lift is reported."),
         "alerts_created": stored,
         "disclaimer": "Synthetic benchmark data. Statistical association is not "
                       "evidence of wrongdoing; review supporting evidence.",
@@ -243,10 +262,13 @@ def get_case_entities(case_id: str) -> dict[str, Any]:
     belonging to them. Identifier values are masked.
     """
     with store.connect() as conn:
-        registry = store.entity_registry(conn, case_id)
-    if not registry["entities"]:
-        raise HTTPException(404, f"No entities resolved for case '{case_id}'.")
-    return registry
+        known = {c["case_id"] for c in store.list_cases(conn)}
+        if case_id not in known:
+            raise HTTPException(404, f"No ingested data for case '{case_id}'.")
+        # An empty registry is a real answer, not an error: the case may hold
+        # only quarantined records. The response carries the reason so the
+        # interface can explain it rather than looking broken.
+        return store.entity_registry(conn, case_id)
 
 
 # ── Neo4j projection (workflow step 6) ────────────────────────────────────
@@ -261,9 +283,12 @@ def build_case_graph(case_id: str) -> dict[str, Any]:
     """
     with store.connect() as conn:
         events = store.load_unified_events(conn, case_id)
+        # Case-scoped only. The shared 'ALL' register exists so that resolution
+        # can consult it; projecting it would put every registered identifier
+        # into every case's graph, including cases that never observed them.
         identifiers = conn.execute(
             "SELECT entity_id, identifier_type, identifier_value, confidence, "
-            "origin, basis FROM entity_identifiers WHERE case_id IN (?, 'ALL')",
+            "origin, basis FROM entity_identifiers WHERE case_id = ?",
             (case_id,)).fetchall()
     if not events:
         raise HTTPException(404, f"No ingested data for case '{case_id}'.")
@@ -354,6 +379,114 @@ def get_evidence(event_id: str) -> dict[str, Any]:
     if record is None:
         raise HTTPException(404, f"No evidence record '{event_id}'.")
     return record
+
+
+# ── Reports ───────────────────────────────────────────────────────────────
+
+def _analysis_for(case_id: str) -> dict[str, Any]:
+    """
+    Current statistical results for a case, recomputed so the report cannot
+    disagree with what the interface shows.
+    """
+    with store.connect() as conn:
+        events = store.load_unified_events(conn, case_id)
+    if not events:
+        return {"results": [], "network_findings": []}
+    return {
+        "results": [r.as_dict() for r in analyse_case(events)],
+        "network_findings": [f.as_dict() for f in detect_bridges(events)],
+    }
+
+
+def _require_case(conn, case_id: str) -> None:
+    if case_id not in {c["case_id"] for c in store.list_cases(conn)}:
+        raise HTTPException(404, f"No ingested data for case '{case_id}'.")
+
+
+@router.get("/cases/{case_id}/report/court-pack")
+def download_court_pack(case_id: str) -> Response:
+    """
+    Exhibit bundle: source records and their provenance only.
+
+    Carries no score, p-value or finding, so the exhibits stand on their own.
+    """
+    with store.connect() as conn:
+        _require_case(conn, case_id)
+        pdf = generate_court_pack(conn, case_id)
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'attachment; filename="sentinel-court-pack-{case_id}.pdf"'})
+
+
+@router.get("/cases/{case_id}/report")
+def download_investigation_report(case_id: str) -> Response:
+    """Working document: findings, statistics and the caveats that go with them."""
+    analysis = _analysis_for(case_id)
+    with store.connect() as conn:
+        _require_case(conn, case_id)
+        pdf = generate_investigation_report(conn, case_id, analysis)
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'attachment; filename="sentinel-report-{case_id}.pdf"'})
+
+
+@router.get("/cases/{case_id}/audit-bundle")
+def download_audit_bundle(case_id: str) -> Response:
+    """Machine-readable export of every record, its provenance and the findings."""
+    analysis = _analysis_for(case_id)
+    with store.connect() as conn:
+        _require_case(conn, case_id)
+        bundle = build_audit_bundle(conn, case_id, analysis)
+    return Response(
+        content=json.dumps(bundle, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition":
+                 f'attachment; filename="sentinel-audit-{case_id}.json"'})
+
+
+@router.get("/cases/{case_id}/report/preview")
+def report_preview(case_id: str) -> dict[str, Any]:
+    """What the documents will contain, so the page can describe them first."""
+    with store.connect() as conn:
+        _require_case(conn, case_id)
+        cases = {c["case_id"]: c for c in store.list_cases(conn)}
+        case = cases[case_id]
+        registry = store.entity_registry(conn, case_id)
+        alerts = store.list_alerts(conn, case_id)
+        batches = store.ingestion_batches(conn, case_id)
+    counts = registry.get("counts", {})
+    return {
+        "case_id": case_id,
+        "records": case.get("events", 0),
+        "quarantined": case.get("quarantined", 0),
+        "subjects": counts.get("people", 0),
+        "identifiers": counts.get("identifiers", 0),
+        "findings": len(alerts),
+        "sources": case.get("data_sources", []),
+        "batches": len(batches),
+        "documents": [
+            {
+                "id": "court-pack",
+                "name": "Court pack",
+                "purpose": "Exhibits only — source records, timestamps and the "
+                           "SHA-256 of each file. No scores or findings.",
+            },
+            {
+                "id": "report",
+                "name": "Investigation report",
+                "purpose": "Findings with their statistics, the baseline compared "
+                           "against, and the alternative explanations considered.",
+            },
+            {
+                "id": "audit-bundle",
+                "name": "Audit bundle",
+                "purpose": "Machine-readable export of every record and finding, "
+                           "hashed so alteration of the export is detectable.",
+            },
+        ],
+    }
 
 
 # ── Validation ────────────────────────────────────────────────────────────

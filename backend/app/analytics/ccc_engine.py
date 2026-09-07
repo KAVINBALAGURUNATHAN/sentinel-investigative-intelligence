@@ -314,3 +314,163 @@ def analyse_case(
     decide(untestable)
     return sorted(results,
                   key=lambda r: (r.decision != "REVIEW", -r.stats.lift))
+
+
+# ── Diagnostics ───────────────────────────────────────────────────────────
+# "No pattern occurrences" is a truthful answer but a useless one: it does not
+# say whether the detector failed, the window was too tight, or the case simply
+# has no banking records. These functions answer that question with the case's
+# own numbers, so an empty result can be trusted rather than guessed at.
+
+def _explain_zero(
+    subject_events: Sequence[TypedEvent],
+    sequence: Sequence[str],
+    window: timedelta,
+) -> dict[str, Any]:
+    """
+    Why did this sequence not match? Checked cheapest-first, so the reason
+    given is the earliest thing that made a match impossible.
+    """
+    present = {e.event_type for e in subject_events}
+    missing = [step for step in sequence if step not in present]
+    if missing:
+        return {
+            "reason": "MISSING_EVENT_TYPE",
+            "detail": f"has no {', '.join(missing)} events, so the sequence "
+                      f"cannot occur for them. Their event types: "
+                      f"{', '.join(sorted(present)) or 'none'}.",
+            "missing_event_types": missing,
+        }
+
+    # Every step exists; find the closest near-miss so the window can be judged.
+    ordered = sorted(subject_events, key=lambda e: e.timestamp)
+    best_span: float | None = None
+    for index, event in enumerate(ordered):
+        if event.event_type != sequence[0]:
+            continue
+        cursor, step = index, 1
+        first = event.timestamp
+        while step < len(sequence) and cursor < len(ordered) - 1:
+            cursor += 1
+            if ordered[cursor].event_type == sequence[step]:
+                step += 1
+        if step == len(sequence):
+            span = (ordered[cursor].timestamp - first).total_seconds() / 60
+            best_span = span if best_span is None else min(best_span, span)
+
+    if best_span is not None:
+        return {
+            "reason": "OUTSIDE_TIME_WINDOW",
+            "detail": f"performs the sequence, but its steps are {best_span:.0f} "
+                      f"minutes apart at the closest — wider than the "
+                      f"{window.total_seconds() / 60:.0f}-minute window. Widening the "
+                      f"window would include it.",
+            "closest_span_minutes": round(best_span, 1),
+        }
+
+    return {
+        "reason": "WRONG_ORDER",
+        "detail": "has every required event type, but never in the configured "
+                  "order. The sequence is ordered, not a set.",
+    }
+
+
+# Ordered least-blocking first: a subject that merely fell outside the window is
+# far more informative than one missing the event type altogether.
+_REJECTION_RANK = {"OUTSIDE_TIME_WINDOW": 0, "WRONG_ORDER": 1,
+                   "MISSING_EVENT_TYPE": 2, "NO_SUBJECT": 3}
+
+
+def diagnose_case(
+    events: Sequence[Any],
+    *,
+    patterns: Sequence[str] | None = None,
+    window_minutes: int = DEFAULT_WINDOW_MINUTES,
+) -> dict[str, Any]:
+    """
+    Report what the detector saw, before any statistics run.
+
+    Returned on every patterns request — an empty result is then explained by
+    the same numbers that produced it, rather than by a blank panel.
+    """
+    live = [e for e in events if not getattr(e, "quarantined", False)]
+    quarantined = len(events) - len(live)
+    dated = [e for e in live if getattr(e, "timestamp", None) is not None]
+    undated = len(live) - len(dated)
+
+    type_counts: dict[str, int] = {}
+    for event in live:
+        key = getattr(event.event_type, "value", str(event.event_type))
+        type_counts[key] = type_counts.get(key, 0) + 1
+
+    subjects = sorted({s for s in (subject_of(e) for e in live) if s})
+    selected = list(patterns) if patterns else list(PATTERNS)
+    window = timedelta(minutes=window_minutes)
+
+    checks: list[dict[str, Any]] = []
+    for name in selected:
+        sequence = PATTERNS[name]
+        per_subject = {
+            subject: len(_occurrence_times(_subject_events(live, subject),
+                                           sequence, window))
+            for subject in subjects
+        }
+        total = sum(per_subject.values())
+        entry: dict[str, Any] = {
+            "pattern": name,
+            "sequence": sequence,
+            "required_event_types": sorted(set(sequence)),
+            "occurrences": total,
+            "by_subject": {k: v for k, v in per_subject.items() if v},
+        }
+        if total == 0:
+            if not subjects:
+                entry["rejection"] = {
+                    "reason": "NO_SUBJECT",
+                    "subject": None,
+                    "detail": "No resolved subject in this case, so there is "
+                              "nobody to test. Check entity resolution.",
+                }
+            else:
+                # Explain using the subject that came CLOSEST to matching; the
+                # first subject alphabetically may be the least informative, and
+                # saying "this case has no TRANSFER events" when another subject
+                # has plenty would be simply untrue.
+                candidates = []
+                for subject in subjects:
+                    reason = _explain_zero(
+                        _subject_events(live, subject), sequence, window)
+                    reason["subject"] = subject
+                    candidates.append(reason)
+                best = min(candidates,
+                           key=lambda r: (_REJECTION_RANK.get(r["reason"], 9),
+                                          r.get("closest_span_minutes", 0)))
+                best["detail"] = f"{best['subject']} {best['detail']}"
+                # A case-level fact worth stating: the type exists, elsewhere.
+                if best["reason"] == "MISSING_EVENT_TYPE":
+                    elsewhere = [t for t in best.get("missing_event_types", [])
+                                 if type_counts.get(t)]
+                    if elsewhere:
+                        best["detail"] += (
+                            f" Note: this case does contain "
+                            f"{', '.join(elsewhere)} events, but they belong to "
+                            f"other subjects, and a sequence is tested per subject.")
+                entry["rejection"] = best
+        checks.append(entry)
+
+    stamps = [e.timestamp for e in dated]
+    return {
+        "events_total": len(events),
+        "events_analysed": len(live),
+        "events_quarantined_excluded": quarantined,
+        "events_without_timestamp": undated,
+        "canonical_event_types": dict(sorted(type_counts.items())),
+        "subjects": subjects,
+        "earliest_timestamp": min(stamps).isoformat() if stamps else None,
+        "latest_timestamp": max(stamps).isoformat() if stamps else None,
+        "window_minutes": window_minutes,
+        "patterns_checked": len(selected),
+        "minimum_occurrences_to_test": MIN_OCCURRENCES,
+        "checks": checks,
+        "total_occurrences": sum(c["occurrences"] for c in checks),
+    }

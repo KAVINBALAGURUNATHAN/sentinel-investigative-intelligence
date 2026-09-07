@@ -63,8 +63,11 @@ export const api = {
     return request(`/cases/${encodeURIComponent(caseId)}/timeline?${query}`)
   },
 
-  patterns: (caseId, permutations = 500) =>
-    request(`/cases/${encodeURIComponent(caseId)}/patterns?permutations=${permutations}`),
+  // window_minutes is configurable: a sequence that falls outside the default
+  // 30 minutes is a real finding at a wider window, not an absence.
+  patterns: (caseId, permutations = 500, windowMinutes = 30) =>
+    request(`/cases/${encodeURIComponent(caseId)}/patterns` +
+            `?permutations=${permutations}&window_minutes=${windowMinutes}`),
   networkMetrics: caseId =>
     request(`/cases/${encodeURIComponent(caseId)}/network/metrics`),
   network: caseId => request(`/cases/${encodeURIComponent(caseId)}/network`),
@@ -89,6 +92,13 @@ export const api = {
 
   benchmark: (permutations = 200) =>
     request(`/validation/benchmark?permutations=${permutations}`),
+
+  reportPreview: caseId =>
+    request(`/cases/${encodeURIComponent(caseId)}/report/preview`),
+  reportUrl: caseId => `${V1}/cases/${encodeURIComponent(caseId)}/report`,
+  courtPackUrl: caseId =>
+    `${V1}/cases/${encodeURIComponent(caseId)}/report/court-pack`,
+  auditBundleUrl: caseId => `${V1}/cases/${encodeURIComponent(caseId)}/audit-bundle`,
 }
 
 /* ── formatting ─────────────────────────────────────────────────────────
