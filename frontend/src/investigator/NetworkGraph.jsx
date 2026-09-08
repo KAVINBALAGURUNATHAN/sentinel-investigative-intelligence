@@ -142,9 +142,18 @@ export default function NetworkGraph({ graph, onSelect, onEdgeSelect, selected,
     */
     const CARD_H = 30
     const cardWidth = d => Math.max(74, 30 + String(d.id ?? '').length * 7.4)
+    /*
+      An identifier is a small disc with a caption underneath it -- "IP ADDRESS"
+      is roughly 62px wide against a disc radius of 9. Sizing collision from the
+      disc alone let the discs sit comfortably apart while their captions
+      printed straight through each other, which is what an investigator
+      actually reads. The footprint is therefore the wider of the two.
+    */
+    const captionWidth = d =>
+      String(styleFor(d.label).label || '').length * 4.6 + 10
     const footprint = d => (d.label === 'Person'
       ? cardWidth(d) / 2 + 14
-      : styleFor(d.label).r + 22)
+      : Math.max(styleFor(d.label).r + 22, captionWidth(d)))
 
     const anchor = focusId && byId.has(focusId) ? focusId : null
     const hopOf = new Map(nodes.map(n => [n.id, anchor ? Infinity : 1]))
@@ -231,6 +240,26 @@ export default function NetworkGraph({ graph, onSelect, onEdgeSelect, selected,
       .attr('stroke-opacity', d => (edgeStyleFor(d.relationship).kind === 'resolution' ? 0.5 : 0.85))
       .attr('marker-end', d => markerFor(d.relationship))
       .style('cursor', 'pointer')
+
+    /*
+      Edge labels are created BEFORE the node group so that nodes paint over
+      them. Appending them last put every "Called x3" on top of the subject
+      cards it crossed -- the label won, and the name of the person it was
+      covering lost. A count is worth less than the identity it obscures, so
+      the node wins the pixel and the label is moved instead (see the tick
+      handler, which slides labels clear of node footprints).
+    */
+    const labelled = links.filter(l => edgeStyleFor(l.relationship).kind !== 'resolution')
+    const edgeLabels = root.append('g').selectAll('g').data(labelled).join('g')
+      .attr('pointer-events', 'none')
+    edgeLabels.append('text')
+      .text(edgeText)
+      .attr('text-anchor', 'middle').attr('dy', -4)
+      .attr('font-size', 9.5).attr('font-weight', 600)
+      .attr('fill', d => edgeStyleFor(d.relationship).stroke)
+      .attr('paint-order', 'stroke')
+      .attr('stroke', '#f4f6f8').attr('stroke-width', 3.5)
+      .attr('stroke-linejoin', 'round')
 
     const node = root.append('g').selectAll('g').data(nodes).join('g')
       .style('cursor', 'pointer')
@@ -319,17 +348,6 @@ export default function NetworkGraph({ graph, onSelect, onEdgeSelect, selected,
       identifier was most of the clutter, and the dashed line plus the card
       already say the same thing.
     */
-    const labelled = links.filter(l => edgeStyleFor(l.relationship).kind !== 'resolution')
-    const edgeLabels = root.append('g').selectAll('g').data(labelled).join('g')
-      .attr('pointer-events', 'none')
-    edgeLabels.append('text')
-      .text(edgeText)
-      .attr('text-anchor', 'middle').attr('dy', -4)
-      .attr('font-size', 9.5).attr('font-weight', 600)
-      .attr('fill', d => edgeStyleFor(d.relationship).stroke)
-      .attr('paint-order', 'stroke')
-      .attr('stroke', '#f4f6f8').attr('stroke-width', 3.5)
-      .attr('stroke-linejoin', 'round')
 
     // interactions
     const tip = d3.select(tipRef.current)
@@ -411,16 +429,117 @@ export default function NetworkGraph({ graph, onSelect, onEdgeSelect, selected,
         (edgeStyleFor(l.relationship).kind === 'resolution' ? 0.5 : 0.85))
     })
 
+    /*
+      Where an edge's label goes.
+
+      The midpoint is the obvious answer and the wrong one. Around a hub the
+      edges fan out, so their midpoints cluster in the same small area and the
+      labels print through each other; and a long edge crossing the layout puts
+      its midpoint wherever it happens to land, which is regularly on top of an
+      unrelated node.
+
+      Two corrections, both cheap enough to run every tick at these graph sizes:
+
+        1. Offset perpendicular to the edge. Parallel edges between the same
+           pair, and edges leaving the same node at similar angles, separate
+           instead of stacking.
+        2. If the anchor lands inside a node's footprint, slide it along the
+           edge -- first one way, then the other -- until it is clear. Sliding
+           along the edge keeps the label attached to the line it describes,
+           which shifting it sideways would not.
+
+      If no clear position exists the label stays at the midpoint and is hidden
+      by the declutter pass below rather than drawn over a node.
+    */
+    const OFFSET = 9
+
+    const labelAnchor = d => {
+      const x1 = d.source.x, y1 = d.source.y, x2 = d.target.x, y2 = d.target.y
+      if (![x1, y1, x2, y2].every(Number.isFinite)) return { x: 0, y: 0, clear: false }
+
+      const dx = x2 - x1, dy = y2 - y1
+      const len = Math.hypot(dx, dy) || 1
+      // Perpendicular unit vector, sign fixed by node id so the two directions
+      // of a pair land on opposite sides rather than both drifting the same way.
+      const side = (d.source.id ?? '') < (d.target.id ?? '') ? 1 : -1
+      const nx = (-dy / len) * OFFSET * side
+      const ny = (dx / len) * OFFSET * side
+
+      const collides = (px, py) => nodes.some(n => {
+        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return false
+        if (n.id === (d.source.id ?? d.source) || n.id === (d.target.id ?? d.target)) {
+          // Its own endpoints still block it; a label sitting on the node it
+          // belongs to is no more readable than one on a stranger.
+          return Math.hypot(px - n.x, py - n.y) < footprint(n) * 0.8
+        }
+        return Math.hypot(px - n.x, py - n.y) < footprint(n)
+      })
+
+      // Try the midpoint, then progressively further along the edge each way.
+      // Candidates: both sides of the line, walking outward from the midpoint.
+      // Trying only one side and one offset made the placer give up early, and
+      // every give-up becomes a label the declutter pass hides -- 37% of them
+      // on the densest synthetic case. More candidates cost a few hypot() calls
+      // and buy back labels that are perfectly placeable.
+      for (const t of [0.5, 0.6, 0.4, 0.7, 0.3, 0.8, 0.22]) {
+        for (const flip of [1, -1]) {
+          const px = x1 + dx * t + nx * flip
+          const py = y1 + dy * t + ny * flip
+          if (!collides(px, py)) return { x: px, y: py, clear: true }
+        }
+      }
+      return { x: x1 + dx * 0.5 + nx, y: y1 + dy * 0.5 + ny, clear: false }
+    }
+
     simulation.on('tick', () => {
       link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
         .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
       node.attr('transform', d => `translate(${d.x},${d.y})`)
-      edgeLabels.attr('transform',
-        d => `translate(${(d.source.x + d.target.x) / 2},${(d.source.y + d.target.y) / 2})`)
+      edgeLabels.attr('transform', d => {
+        const p = labelAnchor(d)
+        return `translate(${p.x},${p.y})`
+      })
     })
+
+    /*
+      Hide labels that still overlap once the layout has settled.
+
+      Two labels printed through each other are not two pieces of information,
+      they are none: neither is readable and a reader cannot tell which count
+      belongs to which line. Dropping one is a real loss, so the survivor is
+      chosen by weight -- the edge carrying more events keeps its label, since
+      that is the one an investigator is more likely to be looking for -- and
+      nothing is deleted, only hidden. Clicking any edge still shows its detail,
+      and the tooltip carries the count regardless.
+
+      Run on 'end' rather than every tick: measuring text is a layout read, and
+      doing it mid-simulation would force a reflow on every frame.
+    */
+    const declutter = () => {
+      const placed = []
+      edgeLabels
+        .each(function (d) { d.__w = this.getBBox().width })
+        .sort((a, b) => (b.count || 0) - (a.count || 0))
+        .attr('opacity', function (d) {
+          const p = labelAnchor(d)
+          if (!p.clear) { return 0 }
+          const w = (d.__w || 40) / 2 + 3
+          const h = 8
+          const hit = placed.some(q =>
+            Math.abs(p.x - q.x) < w + q.w && Math.abs(p.y - q.y) < h + q.h)
+          if (hit) return 0
+          placed.push({ x: p.x, y: p.y, w, h })
+          return 1
+        })
+      // Restore document order so labels are not left sorted by weight, which
+      // would change which one paints on top for any that do remain adjacent.
+      edgeLabels.sort((a, b) => labelled.indexOf(a) - labelled.indexOf(b))
+    }
 
     // frame the settled layout so a sparse case does not float in a void
     simulation.on('end', () => {
+      declutter()
+
       // Only nodes the simulation actually placed. A single node with an
       // undefined or NaN coordinate -- one added after the layout started, or
       // one whose fx/fy came from a measurement that had not resolved --
