@@ -48,7 +48,10 @@ async def get_dashboard(case_id: str) -> dict:
     # ── Active gap-alert pairs (same source for map badges and stat strip) ──
     active_gap_pairs = {}
     for alert in gap_alerts:
-        pair_key = alert.get("pair_key", "")
+        # `.get(key, "")` returns None when the key is present and null, and
+        # `"->" in None` raises. A gap alert without a pair took the whole
+        # dashboard down with a 500 rather than being skipped.
+        pair_key = alert.get("pair_key") or ""
         if (
             not alert.get("flagged_as_anomaly")
             or alert.get("suppressed")

@@ -421,17 +421,32 @@ export default function NetworkGraph({ graph, onSelect, onEdgeSelect, selected,
 
     // frame the settled layout so a sparse case does not float in a void
     simulation.on('end', () => {
-      if (!nodes.length) return
-      const xs = nodes.map(d => d.x), ys = nodes.map(d => d.y)
+      // Only nodes the simulation actually placed. A single node with an
+      // undefined or NaN coordinate -- one added after the layout started, or
+      // one whose fx/fy came from a measurement that had not resolved --
+      // poisons Math.min/Math.max, so scale becomes NaN and the transform
+      // below is applied as translate(NaN,NaN) scale(NaN). That does not throw
+      // and does not warn: it silently blanks the entire canvas, which is
+      // exactly what a graph with no data looks like.
+      const placed = nodes.filter(
+        d => Number.isFinite(d.x) && Number.isFinite(d.y))
+      if (!placed.length || !Number.isFinite(W) || !Number.isFinite(H)
+        || W <= 0 || H <= 0) return
+
+      const xs = placed.map(d => d.x), ys = placed.map(d => d.y)
       const pad = 70
       const [x0, x1] = [Math.min(...xs) - pad, Math.max(...xs) + pad]
       const [y0, y1] = [Math.min(...ys) - pad, Math.max(...ys) + pad]
       const scale = Math.max(0.25, Math.min(1.6,
         0.94 * Math.min(W / Math.max(x1 - x0, 1), H / Math.max(y1 - y0, 1))))
+      const tx = W / 2 - scale * (x0 + x1) / 2
+      const ty = H / 2 - scale * (y0 + y1) / 2
+      // Belt and braces: never hand a non-finite transform to d3.zoom. Leaving
+      // the view where it is beats blanking it.
+      if (![scale, tx, ty].every(Number.isFinite)) return
+
       svg.transition().duration(500).ease(d3.easeCubicOut).call(
-        zoom.transform,
-        d3.zoomIdentity.translate(W / 2 - scale * (x0 + x1) / 2,
-          H / 2 - scale * (y0 + y1) / 2).scale(scale))
+        zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale))
     })
 
     return () => simulation.stop()

@@ -68,7 +68,28 @@ def score_entity(
     total = 0
 
     own_alerts = [a for a in alerts if a.get("entity_id") == entity_id]
+
+    # A structural-bridge observation is stored twice by design: once as a row
+    # in `alerts` (so it appears in the findings list) and once in the
+    # NetworkX output passed as `structural`. They are the same observation.
+    # Scoring both credited it 30 + 20 = 50 points, which alone cleared the
+    # HIGH band -- so a single structural finding, the weakest kind of lead
+    # here, could rank a subject above one with corroborated statistical
+    # findings. It is credited once, at the weight named for that indicator.
+    structural_credited: set[str] = set()
+
     for alert in own_alerts:
+        if str(alert.get("pattern", "")).upper() == "STRUCTURAL_BRIDGE":
+            if entity_id not in structural_credited:
+                structural_credited.add(entity_id)
+                total += WEIGHTS["structural_bridge"]
+                indicators.append({
+                    "indicator": "STRUCTURAL_POSITION",
+                    "points": WEIGHTS["structural_bridge"],
+                    "detail": "Connects groups that would otherwise have no contact",
+                    "evidence": alert.get("alert_id")})
+            continue
+
         severity = str(alert.get("severity", "")).upper()
         if severity == "HIGH":
             points = WEIGHTS["finding_high"]
@@ -112,6 +133,9 @@ def score_entity(
 
     for finding in (structural or []):
         if finding.get("entity") == entity_id and finding.get("decision") == "REVIEW":
+            if entity_id in structural_credited:
+                continue  # already credited from the stored alert; same finding
+            structural_credited.add(entity_id)
             total += WEIGHTS["structural_bridge"]
             indicators.append({
                 "indicator": "STRUCTURAL_POSITION",

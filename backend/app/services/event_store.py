@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -140,17 +141,41 @@ def _db_path() -> Path:
     return Path(os.environ.get("SENTINEL_DB_PATH", str(DEFAULT_DB)))
 
 
+# Databases this process has already brought up to schema. executescript()
+# commits and takes a write lock, so running the full DDL on every connection
+# made every read -- a timeline page, an evidence lookup -- contend for the
+# write lock against any ingestion in flight, and under uvicorn's thread pool
+# that surfaced as "database is locked". The DDL is idempotent and the schema
+# cannot change while the process runs, so it is applied once per database.
+_INITIALISED: set[str] = set()
+_INIT_LOCK = threading.Lock()
+
+
+def _initialise(conn: sqlite3.Connection, key: str) -> None:
+    with _INIT_LOCK:
+        if key in _INITIALISED:
+            return
+        conn.executescript(SCHEMA)
+        _ensure_event_identity(conn)
+        conn.commit()
+        _INITIALISED.add(key)
+
+
 @contextmanager
 def connect(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
     """Open a connection with the schema guaranteed to exist."""
     target = Path(path) if path else _db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target))
+    key = str(target.resolve())
+    conn = sqlite3.connect(str(target), timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript(SCHEMA)
-        _ensure_event_identity(conn)
+        # Readers no longer block on a writer, which is the normal state here:
+        # analytical pages read continuously while an ingestion writes.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        _initialise(conn, key)
         yield conn
         conn.commit()
     finally:
@@ -485,30 +510,52 @@ def get_evidence(conn: sqlite3.Connection, event_id: str) -> dict[str, Any] | No
     return record
 
 
+def _alert_id(case_id: str, entity_id: str | None, pattern: str) -> str:
+    """
+    A stable identifier for one finding.
+
+    Alert ids were previously a counter over whatever the analysis returned
+    this time (ALERT-CASE_002-0001, -0002, ...). Re-running analysis re-numbers
+    them, so ALERT-CASE_002-0002 could name the transfer-social sequence in the
+    morning and a different subject's call pattern in the afternoon. Anything
+    that had written the id down -- an investigator's note, a triage decision,
+    an exported report -- then pointed at the wrong finding, silently.
+
+    The identity of a finding is what it is about: the case, the subject and
+    the pattern. A short digest of those keeps the id stable across re-analyses
+    and stable across machines, while staying opaque enough not to leak the
+    subject value into a URL or a log line.
+    """
+    key = f"{case_id}|{entity_id or ''}|{pattern}"
+    return f"ALERT-{case_id}-{hashlib.sha256(key.encode()).hexdigest()[:10].upper()}"
+
+
 def store_alerts(conn: sqlite3.Connection, case_id: str,
                  results: Iterable[Any],
                  network_findings: Iterable[Any] = ()) -> int:
     """Persist CCC results that warrant investigator attention."""
     conn.execute("DELETE FROM alerts WHERE case_id = ?", (case_id,))
     rows = []
-    for index, result in enumerate(results, start=1):
+    for result in results:
         if result.decision not in {"REVIEW", "MONITOR"}:
             continue
         payload = result.as_dict()
         severity = ("HIGH" if result.decision == "REVIEW" and result.stats.lift >= 10
                     else "MEDIUM" if result.decision == "REVIEW" else "LOW")
         rows.append((
-            f"ALERT-{case_id}-{index:04d}", case_id, result.subject, result.pattern,
+            _alert_id(case_id, result.subject, result.pattern),
+            case_id, result.subject, result.pattern,
             result.decision, severity, result.stats.observed, result.stats.expected,
             result.stats.lift, result.stats.p_value, result.fdr_adjusted,
             result.stats.observed * len(result.sequence),
             datetime.now(timezone.utc).isoformat(), "OPEN", json.dumps(payload),
         ))
-    for offset, finding in enumerate(network_findings, start=1):
+    for finding in network_findings:
         if finding.decision not in {"REVIEW", "MONITOR"}:
             continue
         rows.append((
-            f"ALERT-{case_id}-NET-{offset:04d}", case_id, finding.entity,
+            _alert_id(case_id, finding.entity, "STRUCTURAL_BRIDGE"),
+            case_id, finding.entity,
             "STRUCTURAL_BRIDGE", finding.decision,
             "HIGH" if finding.decision == "REVIEW" else "LOW",
             finding.volume, None, None, None, None, finding.volume,

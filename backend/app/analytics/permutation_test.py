@@ -44,6 +44,12 @@ class TypedEvent:
     event_type: str
 
 
+# Reported in place of a lift that has no finite value, because the null never
+# produced the sequence at all. It is a display bound, not a measurement -- see
+# the note where it is assigned in permutation_test().
+LIFT_CEILING = 999.0
+
+
 @dataclass
 class PermutationResult:
     observed: int
@@ -53,6 +59,7 @@ class PermutationResult:
     permutations: int
     null_min: int = 0
     null_max: int = 0
+    lift_undefined: bool = False
     null_distribution: list[int] = field(default_factory=list, repr=False)
 
     def as_dict(self) -> dict:
@@ -60,6 +67,7 @@ class PermutationResult:
             "observed": self.observed,
             "expected": round(self.expected, 4),
             "lift": round(self.lift, 2),
+            "lift_undefined": self.lift_undefined,
             "p_value": round(self.p_value, 6),
             "permutations": self.permutations,
             "null_min": self.null_min,
@@ -79,11 +87,19 @@ def count_sequences(
     Non-overlapping (each event is consumed by at most one match) prevents a
     single dense burst from being counted combinatorially — 3 calls and 3
     transfers must not report 9 occurrences.
+
+    TIED TIMESTAMPS. Records sharing a timestamp have no observable order, and
+    a plain sort left them in whatever order the caller supplied — so the same
+    case could report a different count depending on the row order the store
+    happened to return, and an evidence figure must not do that. Ties are
+    broken on event_type, which is deterministic, independent of input order,
+    and applied identically to the observed data and to every permutation, so
+    the null it is compared against is built the same way.
     """
     if not sequence or not events:
         return 0
 
-    ordered = sorted(events, key=lambda e: e.timestamp)
+    ordered = sorted(events, key=lambda e: (e.timestamp, e.event_type))
     used = [False] * len(ordered)
     count = 0
 
@@ -128,8 +144,12 @@ def permutation_test(
     """
     observed = count_sequences(events, sequence, window)
 
-    timestamps = [e.timestamp for e in events]
-    labels = [e.event_type for e in events]
+    # Canonical order, so a seeded shuffle reproduces the same null whatever
+    # order the caller supplied. Pairing is irrelevant here -- the labels are
+    # about to be permuted across the timestamps -- but the *seeded* pairing
+    # is not, and a p-value that moves with row order is not reproducible.
+    timestamps = sorted(e.timestamp for e in events)
+    labels = sorted(e.event_type for e in events)
     rng = random.Random(seed)
 
     null_counts: list[int] = []
@@ -143,13 +163,24 @@ def permutation_test(
     p_value = (1 + at_least_observed) / (1 + permutations)
     expected = sum(null_counts) / len(null_counts) if null_counts else 0.0
 
-    # An expected of 0 makes lift undefined; report it against the smallest
-    # resolvable non-zero expectation instead of dividing by zero or
-    # silently reporting infinity.
+    # An expected of 0 makes lift undefined -- there is no denominator.
+    #
+    # The previous fallback (observed x permutations) stood in the smallest
+    # expectation the resampling could resolve, but that quantity is 1/N, so
+    # the reported lift moved with the permutation count: the same data scored
+    # 3,600 at N=200 and 18,000 at N=1000. A number that changes when an
+    # unrelated tuning knob changes is not a measurement, and it was being
+    # printed next to figures that are.
+    #
+    # So it is reported as undefined, at a fixed ceiling, with a flag saying
+    # so. The p-value is unaffected -- it already carries the strength of this
+    # case correctly, at its 1/(N+1) floor.
+    lift_undefined = False
     if expected > 0:
         lift = observed / expected
     elif observed > 0:
-        lift = float(observed) * permutations
+        lift = LIFT_CEILING
+        lift_undefined = True
     else:
         lift = 0.0
 
@@ -157,6 +188,7 @@ def permutation_test(
         observed=observed,
         expected=expected,
         lift=lift,
+        lift_undefined=lift_undefined,
         p_value=p_value,
         permutations=permutations,
         null_min=min(null_counts) if null_counts else 0,

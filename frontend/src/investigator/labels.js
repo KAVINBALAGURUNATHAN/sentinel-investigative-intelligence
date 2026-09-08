@@ -88,7 +88,20 @@ export function sourceLabel(source) {
   return SOURCE_LABELS[source] || titleCase(source)
 }
 
-const DOMAIN_BY_EVENT = {
+/**
+ * The record source each event type came from.
+ *
+ * SINGLE SOURCE OF TRUTH. This map was duplicated in api.js, and the two
+ * copies disagreed about MESSAGE: 'social' here, 'cdr' there. The same event
+ * was therefore attributed to different sources depending on which module
+ * asked -- and this map decides how many *independent* sources corroborate a
+ * finding, so the disagreement changed the strength claimed for the evidence.
+ * api.js re-exports this as DOMAIN_OF; do not reintroduce a second copy.
+ *
+ * MESSAGE is 'social': it bridges the WhatsApp/RawMessage pipeline, which is
+ * messaging-platform data. CDR is telecom call and SMS records.
+ */
+export const DOMAIN_BY_EVENT = {
   CALL: 'cdr', SMS: 'cdr', MESSAGE: 'social',
   TRANSFER: 'bank',
   DATA_SESSION: 'ipdr', LOGIN: 'ipdr',

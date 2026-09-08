@@ -60,7 +60,7 @@ def _to_utc_datetime(value: Any) -> datetime | None:
 
 def _metadata_matches_pair(meta: dict[str, Any], pair_key: str) -> bool:
     """Return True when metadata belongs to either direction of the pair."""
-    if "->" not in pair_key:
+    if not pair_key or "->" not in pair_key:
         return False
 
     left, right = pair_key.split("->", 1)
@@ -186,7 +186,7 @@ def exculpatory_context(state: dict[str, Any]) -> dict[str, Any]:
         if not alert.get("flagged_as_anomaly"):
             continue
 
-        pair_key = alert["pair_key"]
+        pair_key = alert.get("pair_key") or ""
         timeline = timelines.get(pair_key, [])
 
         # Find the timestamp of the gap start message

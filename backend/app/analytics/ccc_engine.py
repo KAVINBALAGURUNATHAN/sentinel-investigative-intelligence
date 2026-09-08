@@ -84,6 +84,10 @@ class CCCResult:
             "observed": self.stats.observed,
             "expected": round(self.stats.expected, 2),
             "lift": round(self.stats.lift, 2),
+            # True when the null never produced the sequence, so there is
+            # no denominator and the lift above is a ceiling, not a ratio.
+            # The display must not print it as a measurement.
+            "lift_undefined": self.stats.lift_undefined,
             "permutations": self.stats.permutations,
             "p_value": round(self.stats.p_value, 6),
             "fdr_adjusted": (None if self.fdr_adjusted is None

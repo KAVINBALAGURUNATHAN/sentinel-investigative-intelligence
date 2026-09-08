@@ -82,6 +82,38 @@ def present(value: str, itype: "IdentifierType | str | None" = None) -> str:
     return str(value) if identifiers_visible() else mask(value, itype)
 
 
+def _mask_handle(v: str) -> str:
+    """@alice_r -> @al*****  (the '@' is a sigil, not a separator)"""
+    body = v.lstrip("@")
+    return "@" + (body[:2] + "*" * max(len(body) - 2, 1) if len(body) > 2 else body)
+
+
+def _mask_upi(v: str) -> str:
+    """
+    9876543210@ybl -> 98********@ybl
+
+    The handle (bank/PSP suffix) is kept: it identifies an institution, not a
+    person, and an investigator needs it to recognise the account.
+    """
+    # rpartition: the separator is the LAST '@'. A value carrying a stray
+    # leading sigil ("@9876543210@okaxis") split on the first one, leaving the
+    # account number in the part treated as the bank handle and printed in
+    # full.
+    user, _, host = v.rpartition("@")
+    if not host or not user:
+        return v
+    user = user.lstrip("@")
+    if not user:
+        return v
+    keep = user[:2] if len(user) > 2 else user[:1]
+    return f"{keep}{'*' * max(len(user) - len(keep), 1)}@{host}"
+
+
+def _mask_ip(v: str) -> str:
+    parts = v.split(".")
+    return ".".join(parts[:2] + ["*", "*"]) if len(parts) == 4 else v
+
+
 def mask(value: str, itype: "IdentifierType | str | None" = None) -> str:
     """
     Mask an identifier for display. Investigators see enough to recognise a
@@ -92,18 +124,23 @@ def mask(value: str, itype: "IdentifierType | str | None" = None) -> str:
     if not value:
         return ""
     v = str(value)
-    # Handles are checked first: a leading '@' would otherwise be read as the
-    # UPI separator and leak the whole handle as the "host" part.
-    if itype == IdentifierType.SOCIAL_HANDLE or v.startswith("@"):
-        body = v.lstrip("@")
-        return "@" + (body[:2] + "*" * max(len(body) - 2, 1) if len(body) > 2 else body)
-    if itype == IdentifierType.UPI or "@" in v:
-        user, _, host = v.partition("@")
-        keep = user[:2] if len(user) > 2 else user[:1]
-        return f"{keep}{'*' * max(len(user) - len(keep), 1)}@{host}" if host else v
+    # A declared type is a fact; the shape of the string is a guess. The guess
+    # used to be consulted first, so a UPI handle that happened to start with
+    # '@' was masked by the social-handle rule -- which keeps the leading '@'
+    # and the first two characters of the rest, exposing more of the value than
+    # the UPI rule intends. Explicit types are therefore settled before any
+    # shape is inspected, and the '@' heuristic only decides untyped values.
+    if itype == IdentifierType.UPI:
+        return _mask_upi(v)
+    if itype == IdentifierType.SOCIAL_HANDLE:
+        return _mask_handle(v)
     if itype == IdentifierType.IP:
-        parts = v.split(".")
-        return ".".join(parts[:2] + ["*", "*"]) if len(parts) == 4 else v
+        return _mask_ip(v)
+    # Untyped from here on: shape is all there is to go on.
+    if v.startswith("@"):
+        return _mask_handle(v)
+    if "@" in v:
+        return _mask_upi(v)
     if len(v) <= 4:
         return "*" * len(v)
     return "*" * (len(v) - 4) + v[-4:]

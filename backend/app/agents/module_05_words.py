@@ -135,11 +135,22 @@ def embed_messages(messages: list[dict], case_id: str = "default") -> None:
     for msg in messages:
         if msg.get("content") and not msg.get("is_quarantined", False):
             message_id = str(msg["message_id"])
-            scoped_case_id = str(msg.get("case_id") or case_id)
+            # The metadata case_id must be the case the pipeline is running,
+            # because that is the value word_patterns() filters on. Preferring
+            # the message's own case_id meant a record carrying a different one
+            # -- the filename-derived id the legacy loader attaches, say -- was
+            # embedded under a partition the search never looked in, and the
+            # module reported "no matches" for a case whose messages were all
+            # present. Silent, and indistinguishable from a clean result.
+            #
+            # The message's own value is kept alongside, so provenance is not
+            # lost by scoping it.
+            record_case_id = str(msg.get("case_id") or case_id)
             docs.append(msg["content"])
-            ids.append(f"{scoped_case_id}:{message_id}")
+            ids.append(f"{case_id}:{message_id}")
             metas.append({
-                "case_id": scoped_case_id,
+                "case_id": str(case_id),
+                "record_case_id": record_case_id,
                 "message_id": message_id,
                 "sender_id": msg.get("sender_id") or "",
                 "receiver_id": msg.get("receiver_id") or "",

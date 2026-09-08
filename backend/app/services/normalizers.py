@@ -48,6 +48,51 @@ def _base_flags(actor: Identifier | None, target: Identifier | None,
     )
 
 
+# A CDR's call_type column carries one of two different vocabularies depending
+# on the operator, and the previous code assumed only the first.
+#
+#   modality   VOICE / SMS / MMS -- what kind of communication it was
+#   direction  IN / OUT / MO / MT -- which way it went
+#
+# The rule was `SMS if call_type == "SMS" else CALL`. Against the synthetic
+# dataset, where every one of the 121 rows reads "OUT", that branch is dead:
+# each row falls through to CALL. It gets the right answer for voice records by
+# accident, and would silently mistype an entire SMS feed from any operator
+# using the direction vocabulary -- while a genuinely unrecognised code would
+# also become CALL, with nothing recorded to say so.
+#
+# The two vocabularies are now read separately: a modality sets the event type,
+# a direction sets the event type to CALL (a CDR row measured in seconds is a
+# call) and is preserved as an attribute rather than discarded. A value in
+# neither vocabulary is flagged, which quarantines the row -- the same rule
+# already applied to unmapped social activity, and for the same reason: the CCC
+# engine matches sequences on event type, so guessing one manufactures pattern
+# occurrences out of records whose meaning is unknown.
+_CDR_MODALITY = {
+    "SMS": EventType.SMS, "TEXT": EventType.SMS, "MMS": EventType.SMS,
+    "VOICE": EventType.CALL, "CALL": EventType.CALL, "DATA": EventType.DATA_SESSION,
+}
+_CDR_DIRECTION = {
+    "IN": "INCOMING", "OUT": "OUTGOING",
+    "INCOMING": "INCOMING", "OUTGOING": "OUTGOING",
+    "MO": "OUTGOING",   # mobile-originated
+    "MT": "INCOMING",   # mobile-terminated
+}
+
+
+def _classify_cdr(call_type: str) -> tuple[EventType, str | None, bool]:
+    """Return (event_type, direction, unmapped) for a CDR call_type value."""
+    if not call_type:
+        # The source did not say. A CDR row is a voice record by default, and
+        # saying nothing is not the same as saying something unrecognised.
+        return EventType.CALL, None, False
+    if call_type in _CDR_MODALITY:
+        return _CDR_MODALITY[call_type], None, False
+    if call_type in _CDR_DIRECTION:
+        return EventType.CALL, _CDR_DIRECTION[call_type], False
+    return EventType.CALL, None, True
+
+
 def normalize_cdr(row: dict[str, Any], *, row_no: int | None = None) -> UnifiedEvent:
     """Call Detail Record → CALL or SMS event."""
     ts, missing, invalid = parse_timestamp(row.get("start_time"))
@@ -59,21 +104,25 @@ def normalize_cdr(row: dict[str, Any], *, row_no: int | None = None) -> UnifiedE
     target = _ident(IdentifierType.PHONE, callee_raw)
 
     call_type = clean(row.get("call_type")).upper()
+    event_type, direction, type_unmapped = _classify_cdr(call_type)
+
     flags = _base_flags(actor, target, target_required=True,
                         missing=missing, invalid=invalid, suspect=suspect)
     flags.value_invalid = dur_bad
+    flags.event_type_unmapped = type_unmapped
 
     return UnifiedEvent(
         event_id=clean(row.get("record_id")) or f"CDR-ROW-{row_no}",
         case_id=clean(row.get("case_id")) or "UNASSIGNED",
         domain=Domain.CDR,
-        event_type=EventType.SMS if call_type == "SMS" else EventType.CALL,
+        event_type=event_type,
         timestamp=ts,
         actor=actor,
         target=target,
         duration_seconds=duration,
         attributes={
             "call_type": call_type,
+            "direction": direction,
             "imei": clean(row.get("imei")),
             "imsi": clean(row.get("imsi")),
             "cell_id": clean(row.get("cell_id")),

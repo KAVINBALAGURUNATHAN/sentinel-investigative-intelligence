@@ -141,9 +141,18 @@ def _project_after_ingest(case_id: str) -> dict[str, Any]:
         # during a deliberate rebuild, but here it would stall the upload for
         # minutes before reporting a failure it can report at once.
         cleared = clear_case(case_id, attempts=1)
+        if cleared.get("status") != "OK":
+            # Do not MERGE over a graph that could not be cleared: every write
+            # is a MERGE, so the old nodes would survive alongside the new ones
+            # and be read as current evidence. Same rule as the manual rebuild.
+            return {"status": "UNAVAILABLE", "case_id": case_id,
+                    "previous_projection_cleared": False,
+                    "reason": cleared.get("reason") or cleared.get("error")
+                    or "Existing projection could not be cleared.",
+                    "retry": f"POST /api/v1/cases/{case_id}/graph/build"}
         result = project_case(case_id, events, [dict(r) for r in identifiers],
                               attempts=1)
-        result["previous_projection_cleared"] = cleared.get("status") == "OK"
+        result["previous_projection_cleared"] = True
         return result
     except Exception as exc:  # noqa: BLE001 - ingestion must survive this
         log.warning("graph projection failed for %s: %s", case_id, exc)
@@ -277,8 +286,13 @@ def global_search(
         args_tail = [case_id] if case_id else []
 
         for row in conn.execute(
-            "SELECT DISTINCT case_id FROM events WHERE case_id LIKE ? ORDER BY case_id "
-            "LIMIT ?", (like, limit)).fetchall():
+            # The case filter has to bind here too. Without it, restricting a
+            # search to one case still returned every other case whose id
+            # matched the term -- the one result class that ignored the scope
+            # the investigator had just set.
+            f"SELECT DISTINCT case_id FROM events WHERE case_id LIKE ? "
+            f"{'AND case_id = ?' if case_id else ''} ORDER BY case_id "
+            f"LIMIT ?", (like, *args_tail, limit)).fetchall():
             results["cases"].append({"case_id": row["case_id"]})
 
         for row in conn.execute(
@@ -526,9 +540,24 @@ def build_case_graph(case_id: str) -> dict[str, Any]:
     # scoping was corrected, would linger and be read as current evidence.
     # Scoped to this case_id, so no other investigation is touched.
     cleared = clear_case(case_id)
+    if cleared.get("status") != "OK":
+        # The clear already exhausted its retry ladder. Neo4j is not reachable,
+        # and projecting now would exhaust the ladder a second time -- doubling
+        # the wait before the caller is told the same thing. Worse, a MERGE
+        # over an uncleared graph accumulates: stale nodes would survive
+        # alongside the new ones and be read as current evidence.
+        return {
+            "status": cleared.get("status", "UNAVAILABLE"),
+            "case_id": case_id,
+            "previous_projection_cleared": False,
+            "reason": cleared.get("reason") or cleared.get("error"),
+            "note": ("The existing projection could not be cleared, so it was "
+                     "not rebuilt. Projecting over it would leave stale nodes "
+                     "in place. Retry once the graph database is reachable."),
+        }
 
     result = project_case(case_id, events, [dict(r) for r in identifiers])
-    result["previous_projection_cleared"] = cleared.get("status") == "OK"
+    result["previous_projection_cleared"] = True
     return result
 
 
@@ -608,6 +637,30 @@ def get_case_network(case_id: str) -> dict[str, Any]:
     return {"case_id": case_id, **graph}
 
 
+def _resolution_edge(case_id: str, source: str, target: str,
+                     relationship: str | None) -> dict[str, Any]:
+    """The standard answer for an ownership edge, which has no events."""
+    return {
+        "case_id": case_id, "source": source, "target": target,
+        "relationship": relationship or "OWNS", "kind": "RESOLUTION",
+        "events": [], "count": 0,
+        "note": "This link is a conclusion of entity resolution, not an "
+                "observed event. It records that the identifier was "
+                "attributed to this subject, and carries the basis for "
+                "that attribution rather than a list of events.",
+    }
+
+
+def _is_ownership_link(conn, case_id: str, source: str, target: str) -> bool:
+    """True if one end is a subject and the other an identifier attributed to it."""
+    row = conn.execute(
+        "SELECT 1 FROM entity_identifiers WHERE case_id = ? AND ("
+        "  (entity_id = ? AND identifier_value = ?) OR"
+        "  (entity_id = ? AND identifier_value = ?)) LIMIT 1",
+        (case_id, source, target, target, source)).fetchone()
+    return row is not None
+
+
 @router.get("/cases/{case_id}/relationship")
 def get_relationship(
     case_id: str,
@@ -629,15 +682,7 @@ def get_relationship(
     """
     ownership = {"OWNS", "USES", "IDENTIFIES"}
     if relationship and relationship.upper() in ownership:
-        return {
-            "case_id": case_id, "source": source, "target": target,
-            "relationship": relationship, "kind": "RESOLUTION",
-            "events": [], "count": 0,
-            "note": "This link is a conclusion of entity resolution, not an "
-                    "observed event. It records that the identifier was "
-                    "attributed to this subject, and carries the basis for "
-                    "that attribution rather than a list of events.",
-        }
+        return _resolution_edge(case_id, source, target, relationship)
 
     with store.connect() as conn:
         if case_id not in {c["case_id"] for c in store.list_cases(conn)}:
@@ -652,6 +697,15 @@ def get_relationship(
             (case_id, source, target, target, source,
              source, target, target, source, limit)).fetchall()
         events = [store._row_to_event_dict(r) for r in rows]  # noqa: SLF001
+
+        # No events, and the caller did not say what kind of edge this is.
+        # It may well be an ownership link -- the graph draws those, and
+        # clicking one omits the relationship parameter. Answering "0 events"
+        # for a link that can never have events reads as missing evidence, so
+        # ask the register before concluding anything.
+        if not events and not relationship and _is_ownership_link(
+                conn, case_id, source, target):
+            return _resolution_edge(case_id, source, target, None)
 
     if relationship:
         wanted = {

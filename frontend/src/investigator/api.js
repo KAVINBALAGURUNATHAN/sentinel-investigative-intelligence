@@ -157,11 +157,24 @@ export function fmtP(p, permutations = 1000) {
   return p.toFixed(4)
 }
 
-export const DOMAIN_OF = {
-  CALL: 'cdr', SMS: 'cdr', MESSAGE: 'cdr',
-  DATA_SESSION: 'ipdr', LOGIN: 'ipdr',
-  TRANSFER: 'bank',
-  SOCIAL_POST: 'social', SOCIAL_CONNECTION: 'social',
+// Re-exported, not redefined: see the note on DOMAIN_BY_EVENT in labels.js.
+// The two copies had drifted apart on MESSAGE.
+export { DOMAIN_BY_EVENT as DOMAIN_OF } from './labels.js'
+
+/**
+ * Render a lift figure, or say plainly that there is no figure to render.
+ *
+ * When the permutation null never produced the sequence, expected is 0 and
+ * lift has no denominator. The backend reports a ceiling with `lift_undefined`
+ * set rather than a number that used to scale with the permutation count.
+ * Printing that ceiling as "999.0x" would present a placeholder as a
+ * measurement, so it is labelled instead. The p-value already carries the
+ * strength of these cases correctly, at its floor.
+ */
+export function fmtLift(result) {
+  if (!result) return '—'
+  if (result.lift_undefined) return 'not defined'
+  return result.lift != null ? `${result.lift.toFixed(1)}×` : '—'
 }
 
 export const severityClass = s => (s || '').toLowerCase() || 'neutral'

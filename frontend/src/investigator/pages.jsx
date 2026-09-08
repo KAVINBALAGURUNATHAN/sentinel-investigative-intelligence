@@ -14,7 +14,7 @@ import {
   Table, Tile, useApi,
 } from './ui.jsx'
 import {
-  api, DOMAIN_OF, fmtDateTime, fmtInr, fmtNum, fmtP, fmtTime, severityClass,
+  api, DOMAIN_OF, fmtDateTime, fmtInr, fmtLift, fmtNum, fmtP, fmtTime, severityClass,
 } from './api.js'
 import NetworkGraph, { edgeLabel } from './NetworkGraph.jsx'
 import { Sparkline, toast } from './feedback.jsx'
@@ -2415,7 +2415,7 @@ function WhyPanel({ alert, onClose }) {
       <dl className="kv">
         <dt>Observed</dt><dd>{d.observed}</dd>
         <dt>Expected</dt><dd>{d.expected?.toFixed(2)}</dd>
-        <dt>Lift</dt><dd>{d.lift?.toFixed(1)}×</dd>
+        <dt>Lift</dt><dd>{fmtLift(d)}</dd>
         <dt>p-value</dt><dd>{fmtP(d.p_value)}</dd>
         <dt>FDR-adjusted</dt><dd>{fmtP(d.fdr_adjusted)}</dd>
         {d.baseline?.span_days != null && (
@@ -3168,8 +3168,8 @@ function FindingCard({ finding: r, permutations, open, onToggle, onNavigate, onO
         <div><dt>Expected</dt><dd>{r.expected?.toFixed(2)}</dd></div>
         <div>
           <dt>Lift</dt>
-          <dd className={review && r.lift >= 3 ? 'is-high' : ''}>
-            {r.lift ? `${r.lift.toFixed(1)}×` : '—'}
+          <dd className={review && !r.lift_undefined && r.lift >= 3 ? 'is-high' : ''}>
+            {fmtLift(r)}
           </dd>
         </div>
         <div>
