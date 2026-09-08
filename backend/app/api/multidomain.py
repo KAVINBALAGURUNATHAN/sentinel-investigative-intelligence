@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
@@ -37,6 +38,8 @@ from app.services.case_report import (
 from app.services.entity_resolution import resolve_case
 from app.services.graph_projection import clear_case, fetch_case_graph, project_case
 from app.services.normalizers import NORMALIZERS, ingestion_summary, normalize_csv_bytes
+
+log = logging.getLogger("sentinel.multidomain")
 
 router = APIRouter(prefix="/api/v1", tags=["multi-domain"])
 
@@ -71,6 +74,7 @@ async def ingest_source(
             event.case_id = case_id
 
     cases = sorted({e.case_id for e in events})
+    resolved_counts: dict[str, int] = {}
     with store.connect() as conn:
         for case in cases:
             subset = [e for e in events if e.case_id == case]
@@ -78,17 +82,110 @@ async def ingest_source(
             store.store_events(conn, subset, case_id=case, source=source,
                                filename=file.filename, sha256=digest)
             store.store_entities(conn, case, registry, subset)
+            resolved_counts[case] = len(store.entity_registry(conn, case)["entities"])
+
+    # ── Graph projection (workflow step 6) ────────────────────────────────
+    # SQLite is already committed above. Projection runs afterwards and never
+    # raises: project_case returns an UNAVAILABLE status rather than throwing,
+    # so an unreachable Neo4j costs the graph, not the ingested evidence. The
+    # projection is a MERGE keyed on (case_id, value) preceded by a clear of
+    # this case only, so repeating an ingestion cannot duplicate nodes or
+    # relationships, and a failed projection can be retried later through
+    # POST /cases/{case_id}/graph/build.
+    projections = [_retry_hint(_project_after_ingest(case), case)
+                   for case in cases]
 
     summary = ingestion_summary(events)
+    for case, projection in zip(cases, projections):
+        _log_ingestion(case_id=case, source=source, filename=file.filename,
+                       digest=digest, summary=summary,
+                       resolved=resolved_counts.get(case, 0),
+                       projection=projection)
+
     return {
         "source": source,
         "filename": file.filename,
         "sha256": digest,
         "cases": cases,
         **summary,
-        "stages": ["UPLOAD", "VALIDATE", "NORMALIZE", "ENTITY_RESOLUTION", "STORE"],
+        "stages": ["UPLOAD", "VALIDATE", "NORMALIZE", "ENTITY_RESOLUTION",
+                   "STORE", "GRAPH_PROJECTION"],
+        "graph_projection": projections,
         "note": "Quarantined records are stored, never discarded.",
     }
+
+
+def _project_after_ingest(case_id: str) -> dict[str, Any]:
+    """
+    Project one case to Neo4j, reporting failure instead of raising.
+
+    Ingestion has already committed by the time this runs. A projection error
+    must therefore be reported, not propagated: losing the HTTP response would
+    tell the caller the ingestion failed when the evidence is safely stored.
+    """
+    try:
+        with store.connect() as conn:
+            events = store.load_unified_events(conn, case_id)
+            identifiers = conn.execute(
+                "SELECT entity_id, identifier_type, identifier_value, confidence, "
+                "origin, basis FROM entity_identifiers WHERE case_id = ?",
+                (case_id,)).fetchall()
+        if not events:
+            return {"status": "SKIPPED", "case_id": case_id,
+                    "reason": "No events available to project."}
+        # Clear first so the projection replaces rather than accumulates; scoped
+        # to this case_id, so no other investigation is touched.
+        #
+        # attempts=1: the caller is waiting on the ingestion response. The full
+        # retry ladder exists for a cold Aura instance and is worth waiting on
+        # during a deliberate rebuild, but here it would stall the upload for
+        # minutes before reporting a failure it can report at once.
+        cleared = clear_case(case_id, attempts=1)
+        result = project_case(case_id, events, [dict(r) for r in identifiers],
+                              attempts=1)
+        result["previous_projection_cleared"] = cleared.get("status") == "OK"
+        return result
+    except Exception as exc:  # noqa: BLE001 - ingestion must survive this
+        log.warning("graph projection failed for %s: %s", case_id, exc)
+        return {"status": "UNAVAILABLE", "case_id": case_id,
+                "reason": f"{type(exc).__name__}",
+                "detail": str(exc)[:200],
+                "retry": f"POST /api/v1/cases/{case_id}/graph/build"}
+
+
+def _retry_hint(projection: dict[str, Any], case_id: str) -> dict[str, Any]:
+    """Tell the caller how to recover a projection that did not happen."""
+    if projection.get("status") == "UNAVAILABLE":
+        projection.setdefault("retry", f"POST /api/v1/cases/{case_id}/graph/build")
+        projection.setdefault(
+            "note", "Events are stored in the event store and remain available "
+                    "to the timeline, pattern analysis and evidence trail. Only "
+                    "the graph projection is outstanding.")
+    return projection
+
+
+def _log_ingestion(*, case_id: str, source: str, filename: str | None,
+                   digest: str, summary: dict[str, Any], resolved: int,
+                   projection: dict[str, Any]) -> None:
+    """
+    One line per ingested case: counts and outcomes, no record content.
+
+    Identifier values, message content and the like are deliberately absent --
+    the file hash and batch identify the data for audit without reproducing
+    personal information into the log.
+    """
+    log.info(
+        "ingest case=%s source=%s file=%s sha256=%s raw=%s valid=%s "
+        "quarantined=%s entities=%s graph=%s nodes=%s edges=%s",
+        case_id, source, filename, digest[:12],
+        summary.get("total"), summary.get("validated"),
+        summary.get("quarantined"), resolved,
+        projection.get("status"),
+        (projection.get("person_nodes", 0) or 0)
+        + (projection.get("identifier_nodes", 0) or 0),
+        (projection.get("ownership_edges", 0) or 0)
+        + (projection.get("activity_edges", 0) or 0),
+    )
 
 
 @router.post("/ingest/entities/register")
@@ -323,6 +420,29 @@ def get_patterns(
         stored = store.store_alerts(conn, case_id, results, network_findings=bridges)
 
     tested = [r for r in results if r.stats.observed > 0]
+
+    # One line per (subject, pattern) actually tested, and one explaining a
+    # zero result. Counts and decisions only -- no identifier values.
+    for result in tested:
+        log.info(
+            "ccc case=%s subject=%s pattern=%s events_analysed=%s window=%s "
+            "observed=%s decision=%s",
+            case_id, result.subject, result.pattern,
+            diagnostics.get("events_analysed"), window_minutes,
+            result.stats.observed, result.decision)
+    if not tested:
+        reasons = sorted({
+            check["rejection"]["reason"]
+            for check in diagnostics.get("checks", [])
+            if check.get("rejection")
+        })
+        log.info(
+            "ccc case=%s events_analysed=%s patterns_checked=%s window=%s "
+            "matches=0 reasons=%s",
+            case_id, diagnostics.get("events_analysed"),
+            diagnostics.get("patterns_checked"), window_minutes,
+            ",".join(reasons) or "NONE")
+
     return {
         "case_id": case_id,
         "patterns_tested": sorted(PATTERNS),

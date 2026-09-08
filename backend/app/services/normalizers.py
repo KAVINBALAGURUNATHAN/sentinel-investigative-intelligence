@@ -186,7 +186,12 @@ def normalize_social(row: dict[str, Any], *, row_no: int | None = None) -> Unifi
     """
     ts, missing, invalid = parse_timestamp(row.get("timestamp"))
     activity = clean(row.get("activity_type")).upper()
+    # Only what _SOCIAL_TYPES states explicitly. An unrecognised or absent
+    # activity is quarantined rather than defaulted: SOCIAL_POST is one of the
+    # event types the CCC engine matches sequences against, so defaulting to it
+    # would fabricate pattern occurrences from rows whose meaning is unknown.
     event_type = _SOCIAL_TYPES.get(activity, EventType.SOCIAL_POST)
+    unmapped = activity not in _SOCIAL_TYPES
 
     actor = _ident(IdentifierType.SOCIAL_HANDLE, row.get("handle"))
     target = _ident(IdentifierType.SOCIAL_HANDLE, row.get("target_handle"))
@@ -197,6 +202,7 @@ def normalize_social(row: dict[str, Any], *, row_no: int | None = None) -> Unifi
         target_required=(event_type == EventType.SOCIAL_CONNECTION),
         missing=missing, invalid=invalid, suspect=is_suspect(content),
     )
+    flags.event_type_unmapped = unmapped
 
     return UnifiedEvent(
         event_id=clean(row.get("post_id")) or f"SOC-ROW-{row_no}",

@@ -69,7 +69,22 @@ def test_quarantined_records_are_stored_not_dropped(ingested):
     """CASE_006 is corrupted; its records must still be retrievable."""
     case = ingested.get("/api/v1/cases/CASE_006").json()
     assert case["quarantined"] > 0
-    assert case["events"] >= case["quarantined"]
+    # "events" counts what analysis can use; "total_records" counts everything
+    # ingested. Nothing is dropped -- the quarantined rows are the difference.
+    assert case["total_records"] == case["events"] + case["quarantined"]
+    assert case["total_records"] >= case["quarantined"]
+
+
+def test_event_count_matches_what_the_timeline_will_show(ingested):
+    """
+    A case summary that counts quarantined rows as events advertises data no
+    analytical view will ever display, which reads as a broken timeline rather
+    than as evidence correctly withheld.
+    """
+    for case in ingested.get("/api/v1/cases").json()["cases"]:
+        timeline = ingested.get(
+            f"/api/v1/cases/{case['case_id']}/timeline?limit=5000").json()
+        assert timeline["count"] == case["events"], case["case_id"]
 
 
 # ── cases and timeline ────────────────────────────────────────────────────

@@ -110,7 +110,10 @@ def test_court_pack_cannot_receive_statistics_by_construction():
 def test_audit_bundle_contains_every_record_including_quarantined(client):
     bundle = client.get("/api/v1/cases/CASE_006/audit-bundle").json()
     assert bundle["case"]["quarantined"] > 0
-    assert len(bundle["events"]) == bundle["case"]["events"]
+    # The bundle is the audit record: it carries every ingested row, valid and
+    # quarantined alike, so it matches total_records rather than the usable
+    # event count.
+    assert len(bundle["events"]) == bundle["case"]["total_records"]
     assert any(e["quarantined"] for e in bundle["events"])
 
 

@@ -32,6 +32,18 @@ from app.api.multidomain import router as multidomain_router
 from app.services.graph_db import close_driver
 from app.agents.module_05_words import preload_collection, semantic_embeddings_enabled
 
+# Uvicorn configures only its own loggers, so application records propagate to a
+# root logger with no handler and are discarded. Ingestion and pattern analysis
+# log the counts an operator needs to tell "nothing matched" from "nothing ran",
+# which is worth nothing if the lines never reach the console. Only added when
+# the root logger is otherwise unconfigured, so a real deployment's logging
+# setup wins.
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=os.getenv("SENTINEL_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
 logger = logging.getLogger(__name__)
 
 

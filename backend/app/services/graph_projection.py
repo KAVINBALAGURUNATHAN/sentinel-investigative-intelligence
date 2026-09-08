@@ -50,15 +50,26 @@ from app.services.graph_db import run_query_for_case, run_write
 _PROJECTION_ATTEMPTS = 6
 
 
-def _with_retry(operation, *args):
-    """Run a graph operation, tolerating a cold-start failure."""
+def _with_retry(operation, *args, attempts: int | None = None):
+    """
+    Run a graph operation, tolerating a cold-start failure.
+
+    `attempts` exists because the two callers want opposite behaviour. A manual
+    rebuild is worth waiting on: an Aura instance resuming from cold needs
+    several tries and roughly twenty seconds of backoff. Automatic projection
+    after an ingest is not -- someone is holding an HTTP response open, and a
+    paused database would stall the upload for minutes across every label group
+    before reporting the failure it could have reported immediately. That path
+    passes attempts=1 and records UNAVAILABLE for a later rebuild.
+    """
+    limit = _PROJECTION_ATTEMPTS if attempts is None else max(1, attempts)
     last: Exception | None = None
-    for attempt in range(_PROJECTION_ATTEMPTS):
+    for attempt in range(limit):
         try:
             return operation(*args)
         except Exception as exc:  # noqa: BLE001 - re-raised below
             last = exc
-            if attempt == _PROJECTION_ATTEMPTS - 1:
+            if attempt == limit - 1:
                 break
             # graph_db opens a cooldown circuit breaker on failure; clear it so
             # the retry is actually attempted rather than short-circuited.
@@ -185,7 +196,8 @@ def build_activity_payload(events: Sequence[Any]) -> list[dict[str, Any]]:
 
 
 def project_case(case_id: str, events: Sequence[Any],
-                 identifiers: Iterable[dict[str, Any]]) -> dict[str, Any]:
+                 identifiers: Iterable[dict[str, Any]],
+                 *, attempts: int | None = None) -> dict[str, Any]:
     """
     Write one case's investigation graph to Neo4j.
 
@@ -221,6 +233,7 @@ def project_case(case_id: str, events: Sequence[Any],
                       r.basis      = row.basis
                 """,
                 {"rows": rows, "case_id": case_id},
+                attempts=attempts,
             )
 
         # Observed activity between identifiers.
@@ -243,6 +256,7 @@ def project_case(case_id: str, events: Sequence[Any],
                       r.last_seen      = row.last_seen
                 """,
                 {"rows": rows, "case_id": case_id},
+                attempts=attempts,
             )
     except Exception as exc:  # graph_db raises when the driver is unreachable
         return {"status": "UNAVAILABLE", "case_id": case_id,
@@ -313,11 +327,11 @@ def fetch_case_graph(case_id: str) -> dict[str, Any]:
     }
 
 
-def clear_case(case_id: str) -> dict[str, Any]:
+def clear_case(case_id: str, *, attempts: int | None = None) -> dict[str, Any]:
     """Remove one case's projection. Case-scoped: never touches other cases."""
     try:
         _with_retry(run_write, "MATCH (n {case_id: $case_id}) DETACH DELETE n",
-                    {"case_id": case_id})
+                    {"case_id": case_id}, attempts=attempts)
     except Exception as exc:
         return {"status": "UNAVAILABLE", "reason": str(exc)[:200]}
     return {"status": "OK", "case_id": case_id}

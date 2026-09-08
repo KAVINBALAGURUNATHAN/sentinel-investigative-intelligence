@@ -572,7 +572,28 @@ function CaseRow({ kase, alerts, selected, onOpen }) {
         <span className={alerts.length ? 'warn' : ''}>
           <b>{alerts.length}</b> {alerts.length === 1 ? 'finding' : 'findings'}
         </span>
+        {kase.quarantined > 0 && (
+          <span className="warn">
+            <b>{fmtNum(kase.quarantined)}</b> quarantined
+          </span>
+        )}
       </div>
+
+      {/*
+        A case whose records all failed validation looks identical to an empty
+        one on every analytical page, because quarantined records are never
+        shown as evidence. Say so here, or the timeline and pattern pages read
+        as broken rather than as correctly withholding unusable data.
+      */}
+      {kase.events === 0 && kase.quarantined > 0 && (
+        <p className="crow-note">
+          All {fmtNum(kase.quarantined)} ingested{' '}
+          {kase.quarantined === 1 ? 'record' : 'records'} failed validation and are
+          held in quarantine, so this case has no events available for the
+          timeline, network or pattern analysis. Review the rejected records in
+          Batch History before re-ingesting.
+        </p>
+      )}
 
       <div className="crow-grid">
         <div>
@@ -2792,6 +2813,24 @@ function TimelineContext({ events, patternCount, windowMinutes }) {
   )
 }
 
+/*
+  A case whose records all failed validation has nothing to show on the
+  timeline, the network or the pattern pages -- not because analysis broke, but
+  because quarantined records are never presented as evidence. Without saying
+  so, those three pages look identically broken.
+*/
+function QuarantineNotice({ kase }) {
+  if (!kase || kase.events !== 0 || !(kase.quarantined > 0)) return null
+  return (
+    <p className="crow-note" style={{ margin: '12px 0' }}>
+      All {fmtNum(kase.quarantined)} ingested{' '}
+      {kase.quarantined === 1 ? 'record' : 'records'} for this case failed
+      validation and are held in quarantine, so no events are available to
+      analyse. Review the rejected records in Batch History before re-ingesting.
+    </p>
+  )
+}
+
 export function Timeline({ caseId, onOpenEvidence, onNavigate }) {
   /*
     Two modes, two sources of truth. The window governs grouping and pattern
@@ -2917,6 +2956,7 @@ export function Timeline({ caseId, onOpenEvidence, onNavigate }) {
                 return <div className="tl-empty">
                   <Empty headline="No events"
                     detail="This case contains no timeline events." />
+                  <QuarantineNotice kase={caseInfo.data} />
                 </div>
               }
               if (!filteredEvents.length) {
@@ -3196,6 +3236,7 @@ export function Patterns({ caseId, onNavigate, onOpenEntity }) {
   const [expanded, setExpanded] = useState(null)
   const state = useApi(() => api.patterns(caseId, permutations, windowMinutes),
     [caseId, permutations, windowMinutes], { enabled: !!caseId })
+  const caseInfo = useApi(() => api.case(caseId), [caseId], { enabled: !!caseId })
 
   if (!caseId) return <Empty headline="Select a case first" />
 
@@ -3231,6 +3272,7 @@ export function Patterns({ caseId, onNavigate, onOpenEntity }) {
                   <Empty headline="No cross-source patterns detected"
                     detail={d.analysis_note ||
                       'No configured sequence occurred within the time window.'} />
+                  <QuarantineNotice kase={caseInfo.data} />
                 </Panel>
                 <DetectionReport d={d} windowMinutes={windowMinutes}
                   onWiden={setWindowMinutes} />

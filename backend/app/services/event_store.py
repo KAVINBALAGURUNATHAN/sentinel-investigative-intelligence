@@ -150,10 +150,42 @@ def connect(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.executescript(SCHEMA)
+        _ensure_event_identity(conn)
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_event_identity(conn: sqlite3.Connection) -> None:
+    """
+    Enforce one stored row per (case_id, event_id).
+
+    The table's original UNIQUE constraint included batch_id, which is minted
+    fresh on every upload -- so it deduplicated only within a single batch, and
+    re-ingesting a file inserted a second copy of every record it contained.
+    That is not merely untidy: duplicated events double a subject's observed
+    occurrence count, which inflates lift and can manufacture a statistically
+    significant finding out of one accidental double-upload.
+
+    A record's identity is the identifier the source file gave it within its
+    case, independent of which upload delivered it. Existing rows are collapsed
+    to the most recently ingested copy before the index is created, since the
+    index cannot be built over duplicates.
+    """
+    already = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+        ("idx_events_identity",)).fetchone()
+    if already:
+        return
+    # Keep the highest rowid: the newest ingestion, whose batch is the current
+    # provenance. Superseded batches remain in ingestion_batches for audit.
+    conn.execute(
+        "DELETE FROM events WHERE rowid NOT IN ("
+        "  SELECT MAX(rowid) FROM events GROUP BY case_id, event_id)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_identity "
+        "ON events(case_id, event_id)")
 
 
 def sha256_bytes(raw: bytes) -> str:
@@ -191,7 +223,10 @@ def store_events(
     )
 
     conn.executemany(
-        "INSERT OR IGNORE INTO events (event_id, case_id, batch_id, domain, "
+        # REPLACE, not IGNORE: re-ingesting a corrected file must update the
+        # stored record and point provenance at the batch that delivered it,
+        # rather than silently keeping the superseded copy.
+        "INSERT OR REPLACE INTO events (event_id, case_id, batch_id, domain, "
         "event_type, timestamp, end_timestamp, actor_type, actor_value, "
         "target_type, target_value, actor_entity, target_entity, amount, "
         "currency, duration_seconds, bytes_up, bytes_down, content, attributes, "
@@ -328,11 +363,20 @@ def _row_to_event_dict(row: sqlite3.Row, *, mask_identifiers: bool = True) -> di
 
 
 def list_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    # "events" must mean the same thing here as everywhere else: records that
+    # passed validation and are therefore available to the timeline, the graph
+    # and the CCC engine. Counting quarantined rows in this total advertises a
+    # case as populated while every analytical page correctly shows nothing --
+    # so they are reported separately, and the entity and date range are scoped
+    # to usable records too.
     rows = conn.execute(
-        "SELECT case_id, COUNT(*) AS events, "
+        "SELECT case_id, "
+        "  SUM(CASE WHEN quarantined = 0 THEN 1 ELSE 0 END) AS events, "
         "  SUM(quarantined) AS quarantined, "
-        "  COUNT(DISTINCT actor_entity) AS entities, "
-        "  MIN(timestamp) AS first_event, MAX(timestamp) AS last_event "
+        "  COUNT(*) AS total_records, "
+        "  COUNT(DISTINCT CASE WHEN quarantined = 0 THEN actor_entity END) AS entities, "
+        "  MIN(CASE WHEN quarantined = 0 THEN timestamp END) AS first_event, "
+        "  MAX(CASE WHEN quarantined = 0 THEN timestamp END) AS last_event "
         "FROM events GROUP BY case_id ORDER BY case_id"
     ).fetchall()
     cases = []
@@ -345,8 +389,9 @@ def list_cases(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "ORDER BY source", (row["case_id"],)).fetchall()]
         cases.append({
             "case_id": row["case_id"],
-            "events": row["events"],
+            "events": row["events"] or 0,
             "quarantined": row["quarantined"] or 0,
+            "total_records": row["total_records"] or 0,
             "entities": row["entities"] or 0,
             "open_alerts": alerts,
             "data_sources": sources,

@@ -629,6 +629,14 @@ label.field > span {
 .crow-scale { display: flex; gap: 18px; margin: 10px 0 12px; font-size: 13px; color: var(--text-2); }
 .crow-scale b { color: var(--text); font-variant-numeric: tabular-nums; }
 .crow-scale .warn b { color: var(--medium); }
+
+/* Why a case with ingested records still shows nothing to analyse. */
+.crow-note {
+  margin: 0 0 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-left: 3px solid var(--medium);
+  border-radius: 4px; background: var(--surface-2);
+  font-size: 12px; line-height: 1.55; color: var(--text-2);
+}
 .crow-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px; padding-top: 12px; border-top: 1px solid var(--border);

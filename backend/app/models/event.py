@@ -132,6 +132,11 @@ class EventFlags(BaseModel):
     target_missing: bool = False
     value_invalid: bool = False
     content_suspect: bool = False
+    # The source named an activity this normaliser has no mapping for. Coercing
+    # it to a default would invent an event type, and the defaults here
+    # (SOCIAL_POST) are the ones the CCC engine tests sequences against -- so an
+    # unmapped row would manufacture pattern occurrences out of nothing.
+    event_type_unmapped: bool = False
 
     @property
     def quarantined(self) -> bool:
