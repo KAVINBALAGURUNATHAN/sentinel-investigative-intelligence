@@ -1799,3 +1799,15 @@ th.blog-num { text-align: right; }
 
 /* the middle column of a validation benchmark row */
 .vcase-main { min-width: 0; }
+
+/* ── LLM case narrative panel ──────────────────────────────────────────── */
+/* Uses only tokens already defined above: --text-2, --text-3, --accent. */
+.crow-sub {
+  font-size: 12.5px; line-height: 1.55; color: var(--text-2);
+}
+.nlist {
+  margin: 0; padding-left: 18px;
+  font-size: 13px; line-height: 1.6; color: var(--text-2);
+}
+.nlist li { margin-bottom: 5px; }
+.nlist li::marker { color: var(--accent); }

@@ -10,8 +10,8 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Async, Chip, Empty, ErrorState, Hint, Icon, NotConnected, Panel, Pill,
-  Table, Tile, useApi,
+  Async, Chip, Empty, ErrorState, Hint, Icon, Loading, NotConnected, Panel,
+  Pill, Table, Tile, useApi,
 } from './ui.jsx'
 import {
   api, DOMAIN_OF, fmtDateTime, fmtInr, fmtLift, fmtNum, fmtP, fmtTime, severityClass,
@@ -3273,6 +3273,118 @@ function FindingCard({ finding: r, permutations, open, onToggle, onNavigate, onO
   )
 }
 
+
+/**
+ * LLM case summary.
+ *
+ * Generated on request, never on page load: it is a live model call costing a
+ * couple of seconds, and an investigator should choose to make it.
+ *
+ * The panel always states where the words came from. `mode: LIVE` means the
+ * text was model-generated AND passed grounding verification against the brief
+ * the model was given. `TEMPLATE` means it was assembled deterministically,
+ * and the reason is shown -- the model being unconfigured, unreachable, or its
+ * output having been rejected for containing a figure the brief did not hold.
+ *
+ * Presenting unlabelled prose would be the real failure here. A reader cannot
+ * tell generated text from computed text by looking at it, and the difference
+ * matters: one is checkable, the other is a summary of checks.
+ */
+function CaseNarrativePanel({ caseId, permutations, windowMinutes }) {
+  const [state, setState] = useState({ status: 'idle' })
+
+  const run = async () => {
+    setState({ status: 'loading' })
+    try {
+      const d = await api.summary(caseId, permutations, windowMinutes)
+      setState({ status: 'done', data: d })
+    } catch (err) {
+      setState({ status: 'error', error: err.message })
+    }
+  }
+
+  if (state.status === 'idle') {
+    return (
+      <Panel title="Case summary">
+        <p className="crow-sub" style={{ margin: '0 0 12px' }}>
+          Generate a plain-English summary of this case&apos;s findings. The
+          statistics below are computed first; the language model is given only
+          those results and writes prose about them. Every figure it produces is
+          checked back against them before the text is shown.
+        </p>
+        <button className="btn primary" onClick={run}>
+          <Icon name="patterns" size={12} /> Generate summary
+        </button>
+      </Panel>
+    )
+  }
+
+  if (state.status === 'loading') {
+    return <Panel title="Case summary"><Loading rows={4} /></Panel>
+  }
+
+  if (state.status === 'error') {
+    return (
+      <Panel title="Case summary">
+        <p className="crow-note" style={{ margin: 0 }}>
+          The summary could not be generated: {state.error}
+        </p>
+        <button className="btn" onClick={run} style={{ marginTop: 12 }}>Retry</button>
+      </Panel>
+    )
+  }
+
+  const n = state.data.narrative
+  const live = n.mode === 'LIVE'
+
+  return (
+    <Panel title="Case summary">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <span className={`pill ${live ? 'low' : 'medium'}`}>
+          {live ? 'Model-generated · verified' : 'Deterministic summary'}
+        </span>
+        {live && n.llm?.model && <span className="crow-sub">{n.llm.model}</span>}
+        <div className="spacer" />
+        <button className="btn" onClick={run}>
+          <Icon name="refresh" size={12} /> Regenerate
+        </button>
+      </div>
+
+      {!live && n.reason && (
+        <p className="crow-note" style={{ margin: '0 0 14px' }}>
+          <b>Not model-generated.</b> {n.reason} The summary below was assembled
+          directly from the computed findings instead.
+          {n.verification_problems?.length > 0 && (
+            <> Rejected because: {n.verification_problems.join('; ')}.</>
+          )}
+        </p>
+      )}
+
+      <p style={{ fontSize: 15, fontWeight: 600, margin: '0 0 14px', lineHeight: 1.45 }}>
+        {n.headline}
+      </p>
+
+      {n.observed?.length > 0 && (
+        <>
+          <div className="crow-label">What the data shows</div>
+          <ul className="nlist">{n.observed.map((s, i) => <li key={i}>{s}</li>)}</ul>
+        </>
+      )}
+      {n.next?.length > 0 && (
+        <>
+          <div className="crow-label" style={{ marginTop: 12 }}>Suggested next steps</div>
+          <ul className="nlist">{n.next.map((s, i) => <li key={i}>{s}</li>)}</ul>
+        </>
+      )}
+      {n.caveats?.length > 0 && (
+        <p className="crow-note" style={{ marginTop: 14 }}>
+          {n.caveats.join(' ')}
+        </p>
+      )}
+    </Panel>
+  )
+}
+
 export function Patterns({ caseId, onNavigate, onOpenEntity }) {
   const [permutations, setPermutations] = useState(500)
   const [windowMinutes, setWindowMinutes] = useState(30)
@@ -3305,6 +3417,9 @@ export function Patterns({ caseId, onNavigate, onOpenEntity }) {
           <Icon name="refresh" size={12} /> Re-run
         </button>
       </div>
+
+      <CaseNarrativePanel caseId={caseId} permutations={permutations}
+        windowMinutes={windowMinutes} />
 
       <Async state={state} rows={5}>
         {d => (

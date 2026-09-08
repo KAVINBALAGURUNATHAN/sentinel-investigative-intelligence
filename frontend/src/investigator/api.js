@@ -68,6 +68,12 @@ export const api = {
   patterns: (caseId, permutations = 500, windowMinutes = 30) =>
     request(`/cases/${encodeURIComponent(caseId)}/patterns` +
             `?permutations=${permutations}&window_minutes=${windowMinutes}`),
+  // On-demand: the summary triggers a live language-model call, so it is not
+  // fetched with the rest of the page.
+  summary: (caseId, permutations = 500, windowMinutes = 30) =>
+    request(`/cases/${encodeURIComponent(caseId)}/summary` +
+            `?permutations=${permutations}&window_minutes=${windowMinutes}`),
+  llmConfig: () => request('/system/llm'),
   networkMetrics: caseId =>
     request(`/cases/${encodeURIComponent(caseId)}/network/metrics`),
   network: caseId => request(`/cases/${encodeURIComponent(caseId)}/network`),

@@ -183,8 +183,20 @@ def case_simulation(state: dict[str, Any]) -> dict[str, Any]:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=512,
+                # 1500, not 512. The configured model is a reasoning model:
+                # it spends completion tokens on internal reasoning before
+                # emitting any content, and those tokens come out of this same
+                # budget. Measured at 154-269 reasoning tokens for a short case
+                # brief, which left barely 100 tokens of headroom -- and a
+                # truncated response fails as invalid JSON, which is
+                # indistinguishable here from a model that declined to answer.
+                # The case then falls back to rule-based theories silently.
+                max_tokens=1500,
                 temperature=0.2,
+                # Cuts reasoning from ~269 tokens to ~19 on the same prompt.
+                # The task is writing two grounded theories, not solving
+                # anything, so deep reasoning buys nothing and risks the budget.
+                reasoning_effort="low",
             )
             raw = (resp.choices[0].message.content or "").strip()
 

@@ -35,6 +35,7 @@ from app.services.case_report import (
     generate_court_pack,
     generate_investigation_report,
 )
+from app.services import case_narrative, llm
 from app.services.entity_resolution import resolve_case
 from app.services.graph_projection import (
     build_local_graph,
@@ -796,6 +797,76 @@ def get_relationship(
         "sources": sorted({e["domain"] for e in events}),
         "events": events,
     }
+
+
+
+# ── LLM narrative (prose over findings that already exist) ────────────────
+
+@router.get("/cases/{case_id}/summary")
+def get_case_summary(
+    case_id: str,
+    window_minutes: int = Query(30, ge=1, le=1440),
+    permutations: int = Query(1000, ge=100, le=5000),
+) -> dict[str, Any]:
+    """
+    A plain-English summary of what this case currently shows.
+
+    The statistics run first. The language model is then handed a brief built
+    entirely from those results and from stored records, and writes prose about
+    them -- it queries nothing, computes nothing and decides nothing.
+
+    Its output is then checked back against the brief: every figure and every
+    subject identifier must appear there, and no sentence may assert that an
+    offence occurred. Text that fails is discarded, not repaired, and a
+    deterministic template summary is returned in its place.
+
+    `mode` is always present:
+        LIVE      model-generated and verified against the brief
+        TEMPLATE  assembled deterministically; `reason` says why
+
+    The brief is returned alongside the narrative so a reader can check every
+    sentence against the figures it was written from.
+    """
+    case = get_case(case_id)                      # 404s if the case has no data
+    patterns = get_patterns(case_id, window_minutes=window_minutes,
+                            permutations=permutations)
+
+    with store.connect() as conn:
+        registry = store.entity_registry(conn, case_id)
+
+    brief = case_narrative.build_brief(
+        case=case,
+        patterns=patterns,
+        network_findings=patterns.get("network_findings") or [],
+        entity_count=len(registry.get("entities") or []),
+    )
+    narrative = case_narrative.narrate(brief)
+
+    log.info("summary case=%s mode=%s verified=%s findings=%d",
+             case_id, narrative["mode"], narrative.get("verified"),
+             len(brief["statistical_analysis"]["escalated_findings"]))
+
+    return {
+        "case_id": case_id,
+        "narrative": narrative,
+        "brief": brief,
+        "disclaimer": (
+            "This summary describes statistical and structural findings. A "
+            "finding means activity is unusual for that subject and warrants "
+            "investigation. It is not evidence that an offence occurred."
+        ),
+    }
+
+
+@router.get("/system/llm")
+def get_llm_config() -> dict[str, Any]:
+    """
+    How the language model is configured. Never returns the key.
+
+    Exposed so the UI can state plainly whether narratives are model-generated,
+    rather than leaving a reader to guess why the wording changed.
+    """
+    return llm.config()
 
 
 # ── Alerts and evidence ───────────────────────────────────────────────────
