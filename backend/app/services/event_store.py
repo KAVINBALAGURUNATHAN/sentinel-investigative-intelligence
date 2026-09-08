@@ -297,7 +297,7 @@ def store_entities(conn: sqlite3.Connection, case_id: str,
 
 
 def _row_to_event_dict(row: sqlite3.Row, *, mask_identifiers: bool = True) -> dict[str, Any]:
-    from app.models.event import mask  # local import avoids a cycle at import time
+    from app.models.event import present  # local import avoids a cycle at import time
 
     actor = row["actor_value"]
     target = row["target_value"]
@@ -309,9 +309,9 @@ def _row_to_event_dict(row: sqlite3.Row, *, mask_identifiers: bool = True) -> di
         "event_type": row["event_type"],
         "timestamp": row["timestamp"],
         "end_timestamp": row["end_timestamp"],
-        "actor": mask(actor, row["actor_type"]) if (actor and mask_identifiers) else actor,
+        "actor": present(actor, row["actor_type"]) if (actor and mask_identifiers) else actor,
         "actor_entity": row["actor_entity"],
-        "target": mask(target, row["target_type"]) if (target and mask_identifiers) else target,
+        "target": present(target, row["target_type"]) if (target and mask_identifiers) else target,
         "target_entity": row["target_entity"],
         "amount": row["amount"],
         "currency": row["currency"],
@@ -496,12 +496,12 @@ def list_alerts(conn: sqlite3.Connection, case_id: str | None = None) -> list[di
 
 def entity_profile(conn: sqlite3.Connection, case_id: str, entity_id: str) -> dict[str, Any]:
     """Identifiers (masked), activity counts and counterparties for one entity."""
-    from app.models.event import mask
+    from app.models.event import present
 
     identifiers = [
         {
             "type": row["identifier_type"],
-            "value_masked": mask(row["identifier_value"], row["identifier_type"]),
+            "value": present(row["identifier_value"], row["identifier_type"]),
             "confidence": row["confidence"],
             "origin": row["origin"],
             "basis": row["basis"],
@@ -522,14 +522,49 @@ def entity_profile(conn: sqlite3.Connection, case_id: str, entity_id: str) -> di
         "SELECT substr(timestamp, 12, 2) AS hour, COUNT(*) AS n FROM events "
         "WHERE case_id=? AND actor_entity=? AND quarantined=0 AND timestamp IS NOT NULL "
         "GROUP BY hour ORDER BY hour", (case_id, entity_id)).fetchall()
+    last = conn.execute(
+        "SELECT MAX(timestamp) FROM events WHERE case_id=? AND quarantined=0 "
+        "AND (actor_entity=? OR target_entity=?)",
+        (case_id, entity_id, entity_id)).fetchone()[0]
+
     return {
         "entity_id": entity_id,
         "case_id": case_id,
+        "last_activity": last,
         "identifiers": identifiers,
         "activity": {row["event_type"]: row["n"] for row in by_type},
         "counterparties": [{"entity": r["entity"], "events": r["n"]} for r in counterparties],
         "active_hours": [{"hour": int(r["hour"]), "events": r["n"]} for r in hours],
     }
+
+
+def entity_activity_series(conn: sqlite3.Connection, case_id: str,
+                          entity_id: str) -> list[dict[str, Any]]:
+    """
+    Events per day for one subject, for the activity sparkline.
+
+    Days with no activity are filled with zero so the line shows gaps rather
+    than compressing them away — a quiet week is itself informative.
+    """
+    rows = conn.execute(
+        "SELECT substr(timestamp, 1, 10) AS day, COUNT(*) AS n FROM events "
+        "WHERE case_id = ? AND quarantined = 0 AND timestamp IS NOT NULL "
+        "AND (actor_entity = ? OR target_entity = ?) "
+        "GROUP BY day ORDER BY day", (case_id, entity_id, entity_id)).fetchall()
+    if not rows:
+        return []
+
+    from datetime import date, timedelta
+
+    counts = {r["day"]: r["n"] for r in rows}
+    start = date.fromisoformat(rows[0]["day"])
+    end = date.fromisoformat(rows[-1]["day"])
+    out, cursor = [], start
+    while cursor <= end and len(out) < 120:
+        key = cursor.isoformat()
+        out.append({"day": key, "events": counts.get(key, 0)})
+        cursor += timedelta(days=1)
+    return out
 
 
 def entity_network(conn: sqlite3.Connection, case_id: str) -> dict[str, Any]:
@@ -572,7 +607,7 @@ def entity_registry(conn: sqlite3.Connection, case_id: str) -> dict[str, Any]:
       PERSON      a resolved entity, with a count of who it is connected to
       identifier  a phone / account / device / handle, showing its owner
     """
-    from app.models.event import mask
+    from app.models.event import present
 
     rows: list[dict[str, Any]] = []
 
@@ -614,7 +649,7 @@ def entity_registry(conn: sqlite3.Connection, case_id: str) -> dict[str, Any]:
         seen[key] = {
             "kind": "IDENTIFIER",
             "type": row["identifier_type"],
-            "id": mask(row["identifier_value"], row["identifier_type"]),
+            "id": present(row["identifier_value"], row["identifier_type"]),
             "connections": None,
             "events": None,
             "linked_to": row["entity_id"],

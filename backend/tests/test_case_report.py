@@ -145,11 +145,23 @@ def test_audit_bundle_carries_the_disclaimer(client):
     assert "synthetic" in bundle["notice"].lower()
 
 
-def test_audit_bundle_identifiers_are_masked(client):
+def test_audit_bundle_follows_the_display_policy(client, monkeypatch):
+    """
+    An export is the highest-risk artifact: it leaves the system. It must obey
+    the same policy as the screen, not a rule of its own — masked whenever the
+    deployment holds sensitive data, readable for the benchmark set where the
+    bundle exists so a third party can recompute the findings.
+    """
+    monkeypatch.setenv("SENTINEL_DATA_MODE", "SENSITIVE")
     bundle = client.get("/api/v1/cases/CASE_002/audit-bundle").json()
     for event in bundle["events"]:
         if event["actor"]:
-            assert "*" in event["actor"], "raw identifier exported"
+            assert "*" in event["actor"], "raw identifier exported from sensitive data"
+
+    monkeypatch.setenv("SENTINEL_DATA_MODE", "SYNTHETIC")
+    bundle = client.get("/api/v1/cases/CASE_002/audit-bundle").json()
+    shown = [e["actor"] for e in bundle["events"] if e["actor"]]
+    assert shown and not any("*" in v for v in shown), "benchmark export masked"
 
 
 def test_bundle_includes_findings_and_diagnostics(client):

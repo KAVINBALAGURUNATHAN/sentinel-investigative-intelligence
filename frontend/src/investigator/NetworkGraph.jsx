@@ -40,10 +40,33 @@ const EDGE_STYLE = {
   CONNECTED_TO: { stroke: '#8a5a00', dash: null, kind: 'observation' },
 }
 
+/* Technical relationship names are correct but not what a person reads first. */
+export const EDGE_LABELS = {
+  OWNS: 'Owns', USES: 'Uses', IDENTIFIES: 'Identifies',
+  CALLED: 'Called', MESSAGED: 'Messaged', TRANSFERRED: 'Financial transfer',
+  CONNECTED_FROM: 'Connected from', LOGGED_IN_FROM: 'Logged in from',
+  POSTED: 'Posted', CONNECTED_TO: 'Connected to',
+}
+export const edgeLabel = rel => EDGE_LABELS[rel] || rel
+
+const fmtGap = iso => {
+  if (!iso) return null
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? null
+    : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric',
+                                  hour: '2-digit', minute: '2-digit' })
+}
+
+const PERSON_MARK =
+  'M-3.2,-1.4a3.2,3.2 0 1,1 6.4,0a3.2,3.2 0 1,1 -6.4,0 M-4.6,4.4a4.8,4.8 0 0,1 9.2,0'
+
+const OWNERSHIP_KINDS = new Set(['OWNS', 'USES', 'IDENTIFIES'])
+
 const styleFor = label => NODE_STYLE[label] || NODE_STYLE.Identifier
 const edgeStyleFor = rel => EDGE_STYLE[rel] || { stroke: '#b3c0cf', dash: null, kind: 'observation' }
 
-export default function NetworkGraph({ graph, onSelect, selected, filters }) {
+export default function NetworkGraph({ graph, onSelect, onEdgeSelect, selected,
+                                      filters, focusId }) {
   const svgRef = useRef(null)
   const tipRef = useRef(null)
   const wrapRef = useRef(null)
@@ -93,8 +116,8 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
     colours.forEach((colour, i) => {
       defs.append('marker')
         .attr('id', `arrow-${i}`).attr('viewBox', '0 -5 10 10')
-        .attr('refX', 22).attr('refY', 0)
-        .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
+        .attr('refX', 26).attr('refY', 0)
+        .attr('markerWidth', 3.4).attr('markerHeight', 3.4).attr('orient', 'auto')
         .append('path').attr('d', 'M0,-4L9,0L0,4').attr('fill', colour).attr('opacity', 0.75)
     })
     const markerFor = rel =>
@@ -105,13 +128,101 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
       .on('zoom', e => root.attr('transform', e.transform))
     svg.call(zoom)
 
+    /*
+      Distance from the focused subject, in hops. It drives three things: how
+      large a node is drawn, how strongly it is coloured, and which ring the
+      radial force pulls it to. Without it every node reads as equally
+      important, which is what makes a graph look like a diagram rather than an
+      investigation.
+    */
+    /*
+      A person is drawn as a card, so the layout has to know how wide that card
+      actually is. Sizing collision from the node radius alone let cards sit on
+      top of edge labels and clip neighbouring text.
+    */
+    const CARD_H = 30
+    const cardWidth = d => Math.max(74, 30 + String(d.id ?? '').length * 7.4)
+    const footprint = d => (d.label === 'Person'
+      ? cardWidth(d) / 2 + 14
+      : styleFor(d.label).r + 22)
+
+    const anchor = focusId && byId.has(focusId) ? focusId : null
+    const hopOf = new Map(nodes.map(n => [n.id, anchor ? Infinity : 1]))
+
+    /*
+      Ownership costs nothing to cross; only a real interaction is a hop.
+
+      Activity runs identifier to identifier — phone called phone — so a person
+      reaches another person via own-identifier, their-identifier, them. Charging
+      a hop for each would put a direct contact three rings out and draw them
+      faded, which says the opposite of the truth: those are the people this
+      subject actually deals with.
+    */
+    const ends = l => [l.source.id ?? l.source, l.target.id ?? l.target]
+    const ownership = links.filter(l => OWNERSHIP_KINDS.has(l.relationship))
+    const activity = links.filter(l => !OWNERSHIP_KINDS.has(l.relationship))
+
+    if (anchor) {
+      const settle = depth => {
+        let grew = true
+        while (grew) {
+          grew = false
+          ownership.forEach(l => {
+            const [a, b] = ends(l)
+            if (hopOf.get(a) === depth && hopOf.get(b) === Infinity) { hopOf.set(b, depth); grew = true }
+            if (hopOf.get(b) === depth && hopOf.get(a) === Infinity) { hopOf.set(a, depth); grew = true }
+          })
+        }
+      }
+
+      hopOf.set(anchor, 0)
+      settle(0)
+      for (let depth = 1; depth <= 3; depth++) {
+        const reached = []
+        activity.forEach(l => {
+          const [a, b] = ends(l)
+          if (hopOf.get(a) === depth - 1 && hopOf.get(b) === Infinity) reached.push(b)
+          if (hopOf.get(b) === depth - 1 && hopOf.get(a) === Infinity) reached.push(a)
+        })
+        if (!reached.length) break
+        reached.forEach(id => hopOf.set(id, depth))
+        settle(depth)
+      }
+    }
+    const hop = d => {
+      const value = hopOf.get(d.id)
+      return value === undefined || value === Infinity ? 3 : value
+    }
+
+    // Selected subject largest, direct contacts medium, identifiers small,
+    // anything further out smaller still.
+    const radiusOf = d => {
+      const base = styleFor(d.label).r
+      if (d.id === anchor) return base + 9
+      if (d.label === 'Person') return base + 2
+      return hop(d) >= 2 ? base - 2 : base
+    }
+    const dimOf = d => (hop(d) >= 2 ? 0.55 : 1)
+
     const simulation = d3.forceSimulation(nodes)
       .force('link', d3.forceLink(links).id(d => d.id)
-        .distance(l => (edgeStyleFor(l.relationship).kind === 'resolution' ? 46 : 110))
+        .distance(l => (edgeStyleFor(l.relationship).kind === 'resolution' ? 62 : 150))
         .strength(l => (edgeStyleFor(l.relationship).kind === 'resolution' ? 0.85 : 0.25)))
-      .force('charge', d3.forceManyBody().strength(-260))
-      .force('collide', d3.forceCollide(d => styleFor(d.label).r + 11))
+      .force('charge', d3.forceManyBody().strength(-320))
+      .force('collide', d3.forceCollide(footprint).strength(0.95))
       .force('center', d3.forceCenter(W / 2, H / 2))
+      // Rings rather than a blob: the subject sits centre, its contacts on the
+      // first ring, their identifiers beyond. Uses the canvas instead of
+      // huddling in the middle of it.
+      .force('radial', anchor
+        ? d3.forceRadial(d => (d.id === anchor ? 0 : hop(d) * Math.min(W, H) * 0.19),
+                         W / 2, H / 2).strength(d => (d.id === anchor ? 1 : 0.55))
+        : null)
+
+    if (anchor) {
+      const centre = nodes.find(n => n.id === anchor)
+      if (centre) { centre.fx = W / 2; centre.fy = H / 2 }
+    }
 
     const link = root.append('g').selectAll('line').data(links).join('line')
       .attr('stroke', d => edgeStyleFor(d.relationship).stroke)
@@ -134,18 +245,91 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
           d.fx = null; d.fy = null
         }))
 
-    node.append('circle')
-      .attr('r', d => styleFor(d.label).r)
+    // A person is drawn as a card and an identifier as a smaller disc, so the
+    // kind of thing is legible from shape before any colour is read.
+    const person = node.filter(d => d.label === 'Person')
+    person.append('rect')
+      .attr('x', d => -cardWidth(d) / 2).attr('y', -CARD_H / 2)
+      .attr('width', cardWidth).attr('height', CARD_H)
+      .attr('rx', 7)
+      .attr('fill', '#ffffff')
+      .attr('stroke', d => (d.id === selected || d.id === anchor ? '#1f4e79' : '#c4d0dd'))
+      .attr('stroke-width', d => (d.id === anchor ? 2.4 : d.id === selected ? 2 : 1.2))
+      .attr('opacity', dimOf)
+
+    // icon sits in its own gutter on the left of the card
+    person.append('circle')
+      .attr('cx', d => -cardWidth(d) / 2 + 13).attr('cy', 0).attr('r', 7)
+      .attr('fill', d => styleFor(d.label).fill).attr('opacity', dimOf)
+    person.append('path')
+      .attr('d', PERSON_MARK)
+      .attr('transform', d => `translate(${-cardWidth(d) / 2 + 13},-0.6)`)
+      .attr('fill', 'none').attr('stroke', '#ffffff').attr('stroke-width', 1.3)
+      .attr('stroke-linecap', 'round').attr('pointer-events', 'none')
+
+    // text is centred in the space the icon leaves, not on the whole card
+    const textCentre = d => (-cardWidth(d) / 2 + 26 + cardWidth(d) / 2) / 2 + 5
+    person.append('text')
+      .text(d => d.id ?? '')
+      .attr('x', textCentre).attr('dy', -1)
+      .attr('text-anchor', 'middle').attr('font-size', 11)
+      .attr('font-family', 'ui-monospace, monospace').attr('font-weight', 600)
+      .attr('fill', '#14202f').attr('opacity', dimOf).attr('pointer-events', 'none')
+    person.append('text')
+      .text('SUBJECT')
+      .attr('x', textCentre).attr('dy', 10)
+      .attr('text-anchor', 'middle').attr('font-size', 7)
+      .attr('letter-spacing', 0.7).attr('fill', '#66768a')
+      .attr('opacity', dimOf).attr('pointer-events', 'none')
+
+    const other = node.filter(d => d.label !== 'Person')
+    other.append('circle')
+      .attr('r', radiusOf)
       .attr('fill', d => styleFor(d.label).fill)
-      .attr('fill-opacity', 0.9)
+      .attr('fill-opacity', d => 0.9 * dimOf(d))
       .attr('stroke', d => (d.id === selected ? '#1f4e79' : '#ffffff'))
       .attr('stroke-width', d => (d.id === selected ? 2.5 : 1.5))
+    other.append('text')
+      .text(d => styleFor(d.label).label.toUpperCase())
+      .attr('text-anchor', 'middle').attr('dy', d => radiusOf(d) + 12)
+      .attr('font-size', 7.5).attr('letter-spacing', 0.5)
+      .attr('fill', '#66768a').attr('paint-order', 'stroke')
+      .attr('stroke', '#f4f6f8').attr('stroke-width', 2.5)
+      .attr('stroke-linejoin', 'round')
+      .attr('opacity', dimOf).attr('pointer-events', 'none')
 
-    node.filter(d => d.label === 'Person').append('text')
-      .text(d => d.id)
-      .attr('text-anchor', 'middle').attr('dy', 26)
-      .attr('font-size', 10).attr('font-family', 'ui-monospace, monospace')
-      .attr('fill', '#14202f').attr('pointer-events', 'none')
+    /*
+      The edge carries its own meaning. "Call x18" or an amount tells an
+      investigator what the line is before they touch it; the full record stays
+      on hover and click.
+    */
+    const edgeText = d => {
+      const label = edgeLabel(d.relationship)
+      if (edgeStyleFor(d.relationship).kind === 'resolution') return label
+      if (d.total_amount) {
+        return new Intl.NumberFormat('en-IN',
+          { style: 'currency', currency: 'INR', maximumFractionDigits: 0 })
+          .format(Number(d.total_amount))
+      }
+      return d.count > 1 ? `${label} x${d.count}` : label
+    }
+
+    /*
+      Only observed activity is labelled. "Owns" and "Uses" repeated on every
+      identifier was most of the clutter, and the dashed line plus the card
+      already say the same thing.
+    */
+    const labelled = links.filter(l => edgeStyleFor(l.relationship).kind !== 'resolution')
+    const edgeLabels = root.append('g').selectAll('g').data(labelled).join('g')
+      .attr('pointer-events', 'none')
+    edgeLabels.append('text')
+      .text(edgeText)
+      .attr('text-anchor', 'middle').attr('dy', -4)
+      .attr('font-size', 9.5).attr('font-weight', 600)
+      .attr('fill', d => edgeStyleFor(d.relationship).stroke)
+      .attr('paint-order', 'stroke')
+      .attr('stroke', '#f4f6f8').attr('stroke-width', 3.5)
+      .attr('stroke-linejoin', 'round')
 
     // interactions
     const tip = d3.select(tipRef.current)
@@ -158,7 +342,7 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
     const hideTip = () => tip.style('opacity', 0)
 
     node.on('mouseenter', (event, d) =>
-      showTip(event, `${styleFor(d.label).label}<br>${d.id}`))
+      showTip(event, `${styleFor(d.label).label}<br>${d.id ?? 'unidentified'}`))
       .on('mousemove', event => {
         const box = wrap.getBoundingClientRect()
         tip.style('left', `${event.clientX - box.left + 12}px`)
@@ -169,14 +353,44 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
 
     link.on('mouseenter', (event, d) => {
       const style = edgeStyleFor(d.relationship)
-      const extra = style.kind === 'resolution'
-        ? `confidence ${d.confidence ?? '—'}`
-        : `${d.count} event${d.count === 1 ? '' : 's'}` +
-          (d.total_amount ? ` · ₹${Number(d.total_amount).toLocaleString('en-IN')}` : '')
-      showTip(event,
-        `${d.source} → ${d.target}<br>${d.relationship} · ${extra}<br>` +
-        `<span style="color:#6b7d92">${style.kind}</span>`)
+      const lines = [`<b>${edgeLabel(d.relationship)}</b>`,
+                     `${d.source.id ?? d.source} → ${d.target.id ?? d.target}`]
+
+      if (style.kind === 'resolution') {
+        lines.push(`Attributed by entity resolution`)
+        if (d.confidence != null) lines.push(`Confidence ${d.confidence}`)
+        if (d.basis) lines.push(String(d.basis))
+      } else {
+        lines.push(`${d.count} event${d.count === 1 ? '' : 's'}`)
+        if (d.total_amount) {
+          lines.push(`Total ₹${Number(d.total_amount).toLocaleString('en-IN')}`)
+        }
+        if (d.total_duration) {
+          lines.push(`Total duration ${Math.round(d.total_duration / 60)} min`)
+        }
+        const last = fmtGap(d.last_seen)
+        if (last) lines.push(`Last event ${last}`)
+      }
+      showTip(event, lines.join('<br>'))
     }).on('mouseleave', hideTip)
+
+    // Clicking an edge opens the relationship inspector.
+    link.on('click', (event, d) => {
+      event.stopPropagation()
+      onEdgeSelect?.({
+        source: d.source.id ?? d.source,
+        target: d.target.id ?? d.target,
+        relationship: d.relationship,
+        count: d.count,
+        total_amount: d.total_amount,
+        total_duration: d.total_duration,
+        first_seen: d.first_seen,
+        last_seen: d.last_seen,
+        confidence: d.confidence,
+        basis: d.basis,
+        kind: edgeStyleFor(d.relationship).kind,
+      })
+    })
 
     // dim everything not adjacent to the hovered node
     node.on('mouseover.highlight', (_e, d) => {
@@ -201,6 +415,8 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
       link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
         .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
       node.attr('transform', d => `translate(${d.x},${d.y})`)
+      edgeLabels.attr('transform',
+        d => `translate(${(d.source.x + d.target.x) / 2},${(d.source.y + d.target.y) / 2})`)
     })
 
     // frame the settled layout so a sparse case does not float in a void
@@ -219,7 +435,7 @@ export default function NetworkGraph({ graph, onSelect, selected, filters }) {
     })
 
     return () => simulation.stop()
-  }, [graph, hidden, filters, selected, onSelect])
+  }, [graph, hidden, filters, selected, onSelect, onEdgeSelect, focusId])
 
   if (!graph?.nodes?.length) return null
 

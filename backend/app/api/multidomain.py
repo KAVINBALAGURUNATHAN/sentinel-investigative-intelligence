@@ -25,7 +25,9 @@ from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import Response
 
 from app.analytics.ccc_engine import PATTERNS, analyse_case, diagnose_case
+from app.analytics.entity_risk import score_entity
 from app.analytics.network_metrics import detect_bridges, network_summary
+from app.config import display_policy
 from app.services import event_store as store
 from app.services.case_report import (
     build_audit_bundle,
@@ -135,6 +137,98 @@ def ingestion_history(case_id: str | None = None) -> dict[str, Any]:
     """Batch history for the Data Ingestion page, with source hashes."""
     with store.connect() as conn:
         return {"batches": store.ingestion_batches(conn, case_id)}
+
+
+@router.get("/system/display-policy")
+def get_display_policy() -> dict[str, Any]:
+    """
+    Whether identifiers may be shown in full, and why.
+
+    The interface states the policy rather than leaving a viewer to infer it
+    from whether asterisks happen to be present.
+    """
+    return display_policy()
+
+
+@router.get("/search")
+def global_search(
+    q: str = Query(..., min_length=1, description="Free text"),
+    case_id: str | None = Query(None, description="Restrict to one case"),
+    limit: int = Query(10, le=50),
+) -> dict[str, Any]:
+    """
+    Search across cases, subjects, identifiers, evidence records and findings.
+
+    An investigator is handed a number and asked what it is. They should not
+    have to know whether it is a phone, an account or an evidence id before
+    they can look it up, so one query covers all of them and the results say
+    which kind each match is.
+
+    Matching is a case-insensitive substring, applied to the stored values.
+    Identifier values in results follow the display policy, like everywhere else.
+    """
+    from app.models.event import present
+
+    term = q.strip()
+    like = f"%{term}%"
+    results: dict[str, list[dict[str, Any]]] = {
+        "cases": [], "subjects": [], "identifiers": [], "evidence": [], "findings": [],
+    }
+
+    with store.connect() as conn:
+        scope = "AND case_id = ?" if case_id else ""
+        args_tail = [case_id] if case_id else []
+
+        for row in conn.execute(
+            "SELECT DISTINCT case_id FROM events WHERE case_id LIKE ? ORDER BY case_id "
+            "LIMIT ?", (like, limit)).fetchall():
+            results["cases"].append({"case_id": row["case_id"]})
+
+        for row in conn.execute(
+            f"SELECT DISTINCT actor_entity AS entity, case_id FROM events "
+            f"WHERE actor_entity LIKE ? {scope} ORDER BY entity LIMIT ?",
+            (like, *args_tail, limit)).fetchall():
+            if row["entity"]:
+                results["subjects"].append(
+                    {"entity_id": row["entity"], "case_id": row["case_id"]})
+
+        # The declared register is stored under 'ALL' as well as against each
+        # case, so the same value matches twice. Show it once, preferring the
+        # row that names a real case.
+        seen_identifiers: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in conn.execute(
+            f"SELECT entity_id, identifier_type, identifier_value, case_id "
+            f"FROM entity_identifiers WHERE identifier_value LIKE ? "
+            f"{'AND case_id = ?' if case_id else ''} "
+            f"ORDER BY CASE WHEN case_id = 'ALL' THEN 1 ELSE 0 END, identifier_type "
+            f"LIMIT ?",
+            (like, *args_tail, limit * 2)).fetchall():
+            key = (row["identifier_value"], row["entity_id"])
+            if key in seen_identifiers:
+                continue
+            seen_identifiers[key] = {
+                "value": present(row["identifier_value"], row["identifier_type"]),
+                "type": row["identifier_type"],
+                "entity_id": row["entity_id"],
+                "case_id": row["case_id"],
+            }
+        results["identifiers"] = list(seen_identifiers.values())[:limit]
+
+        for row in conn.execute(
+            f"SELECT event_id, case_id, event_type, timestamp, source_file "
+            f"FROM events WHERE (event_id LIKE ? OR source_file LIKE ?) {scope} "
+            f"ORDER BY timestamp LIMIT ?",
+            (like, like, *args_tail, limit)).fetchall():
+            results["evidence"].append(dict(row))
+
+        for row in conn.execute(
+            f"SELECT alert_id, case_id, entity_id, pattern, severity FROM alerts "
+            f"WHERE (pattern LIKE ? OR entity_id LIKE ? OR alert_id LIKE ?) {scope} "
+            f"LIMIT ?", (like, like, like, *args_tail, limit)).fetchall():
+            results["findings"].append(dict(row))
+
+    total = sum(len(v) for v in results.values())
+    return {"query": term, "case_id": case_id, "total": total, "results": results}
 
 
 # ── Cases ─────────────────────────────────────────────────────────────────
@@ -268,7 +362,20 @@ def get_case_entities(case_id: str) -> dict[str, Any]:
         # An empty registry is a real answer, not an error: the case may hold
         # only quarantined records. The response carries the reason so the
         # interface can explain it rather than looking broken.
-        return store.entity_registry(conn, case_id)
+        registry = store.entity_registry(conn, case_id)
+        alerts = store.list_alerts(conn, case_id)
+        events = store.load_unified_events(conn, case_id)
+        structural = [f.as_dict() for f in detect_bridges(events)]
+        for row in registry["entities"]:
+            if row["kind"] != "PERSON":
+                continue
+            related = store.related_entities(conn, case_id, row["id"])
+            profile = store.entity_profile(conn, case_id, row["id"])
+            row["attention"] = score_entity(
+                row["id"], alerts=alerts, related=related,
+                activity=profile["activity"], structural=structural)
+            row["activity_series"] = store.entity_activity_series(conn, case_id, row["id"])
+        return registry
 
 
 # ── Neo4j projection (workflow step 6) ────────────────────────────────────
@@ -292,7 +399,17 @@ def build_case_graph(case_id: str) -> dict[str, Any]:
             (case_id,)).fetchall()
     if not events:
         raise HTTPException(404, f"No ingested data for case '{case_id}'.")
-    return project_case(case_id, events, [dict(r) for r in identifiers])
+
+    # Replace, do not accumulate. Every write is a MERGE, so re-projecting
+    # without clearing leaves behind nodes that no longer belong to the case —
+    # an entity removed from the register, or identifiers written before case
+    # scoping was corrected, would linger and be read as current evidence.
+    # Scoped to this case_id, so no other investigation is touched.
+    cleared = clear_case(case_id)
+
+    result = project_case(case_id, events, [dict(r) for r in identifiers])
+    result["previous_projection_cleared"] = cleared.get("status") == "OK"
+    return result
 
 
 @router.get("/cases/{case_id}/graph")
@@ -316,7 +433,15 @@ def get_entity(entity_id: str, case_id: str = Query(...)) -> dict[str, Any]:
             raise HTTPException(404, f"Entity '{entity_id}' not found in {case_id}.")
         profile["related_entities"] = store.related_entities(conn, case_id, entity_id)
         profile["connections"] = len(profile["related_entities"])
-        return profile
+        profile["activity_series"] = store.entity_activity_series(conn, case_id, entity_id)
+        alerts = store.list_alerts(conn, case_id)
+        events = store.load_unified_events(conn, case_id)
+
+    # Ranking aid only: every point traces to a named indicator returned with it.
+    profile["attention"] = score_entity(
+        entity_id, alerts=alerts, related=profile["related_entities"],
+        activity=profile["activity"], structural=[f.as_dict() for f in detect_bridges(events)])
+    return profile
 
 
 @router.get("/entities/{entity_id}/network")
@@ -361,6 +486,81 @@ def get_case_network(case_id: str) -> dict[str, Any]:
     if not graph["nodes"]:
         raise HTTPException(404, f"No resolved network for case '{case_id}'.")
     return {"case_id": case_id, **graph}
+
+
+@router.get("/cases/{case_id}/relationship")
+def get_relationship(
+    case_id: str,
+    source: str = Query(..., description="Identifier or entity at one end"),
+    target: str = Query(..., description="Identifier or entity at the other end"),
+    relationship: str | None = Query(None, description="Graph relationship type"),
+    limit: int = Query(200, le=2000),
+) -> dict[str, Any]:
+    """
+    The events behind one graph edge.
+
+    An edge is an aggregate — "called ×18". This returns the individual records
+    that were aggregated, so an investigator can go from a line on the graph to
+    the exact call at the exact minute, and from there to its evidence record.
+
+    Ownership edges (OWNS/USES) are conclusions of entity resolution, not
+    observations, so they have no events; the response says so rather than
+    returning an empty list that reads as missing data.
+    """
+    ownership = {"OWNS", "USES", "IDENTIFIES"}
+    if relationship and relationship.upper() in ownership:
+        return {
+            "case_id": case_id, "source": source, "target": target,
+            "relationship": relationship, "kind": "RESOLUTION",
+            "events": [], "count": 0,
+            "note": "This link is a conclusion of entity resolution, not an "
+                    "observed event. It records that the identifier was "
+                    "attributed to this subject, and carries the basis for "
+                    "that attribution rather than a list of events.",
+        }
+
+    with store.connect() as conn:
+        if case_id not in {c["case_id"] for c in store.list_cases(conn)}:
+            raise HTTPException(404, f"No ingested data for case '{case_id}'.")
+        rows = conn.execute(
+            "SELECT * FROM events WHERE case_id = ? AND quarantined = 0 AND ("
+            "  (actor_value = ? AND target_value = ?) OR"
+            "  (actor_value = ? AND target_value = ?) OR"
+            "  (actor_entity = ? AND target_entity = ?) OR"
+            "  (actor_entity = ? AND target_entity = ?)"
+            ") ORDER BY timestamp LIMIT ?",
+            (case_id, source, target, target, source,
+             source, target, target, source, limit)).fetchall()
+        events = [store._row_to_event_dict(r) for r in rows]  # noqa: SLF001
+
+    if relationship:
+        wanted = {
+            "CALLED": {"CALL"}, "MESSAGED": {"SMS", "MESSAGE"},
+            "TRANSFERRED": {"TRANSFER"}, "CONNECTED_FROM": {"DATA_SESSION"},
+            "LOGGED_IN_FROM": {"LOGIN"}, "POSTED": {"SOCIAL_POST"},
+            "CONNECTED_TO": {"SOCIAL_CONNECTION"},
+        }.get(relationship.upper())
+        if wanted:
+            events = [e for e in events if e["event_type"] in wanted]
+
+    durations = [e["duration_seconds"] for e in events if e.get("duration_seconds")]
+    amounts = [float(e["amount"]) for e in events if e.get("amount")]
+    stamps = [e["timestamp"] for e in events if e.get("timestamp")]
+
+    return {
+        "case_id": case_id,
+        "source": source,
+        "target": target,
+        "relationship": relationship,
+        "kind": "OBSERVATION",
+        "count": len(events),
+        "first_seen": min(stamps) if stamps else None,
+        "last_seen": max(stamps) if stamps else None,
+        "total_duration_seconds": sum(durations) if durations else None,
+        "total_amount": sum(amounts) if amounts else None,
+        "sources": sorted({e["domain"] for e in events}),
+        "events": events,
+    }
 
 
 # ── Alerts and evidence ───────────────────────────────────────────────────

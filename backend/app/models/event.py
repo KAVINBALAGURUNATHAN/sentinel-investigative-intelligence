@@ -67,6 +67,21 @@ class Domain(str, Enum):
     MESSAGING = "MESSAGING"
 
 
+def present(value: str, itype: "IdentifierType | str | None" = None) -> str:
+    """
+    Return an identifier the way the current deployment is permitted to show it.
+
+    This is the only function display code should call. mask() stays public
+    because the masking rule itself is worth testing directly, but every
+    response path goes through here so one setting governs all of them.
+    """
+    from app.config import identifiers_visible
+
+    if not value:
+        return ""
+    return str(value) if identifiers_visible() else mask(value, itype)
+
+
 def mask(value: str, itype: "IdentifierType | str | None" = None) -> str:
     """
     Mask an identifier for display. Investigators see enough to recognise a

@@ -44,7 +44,10 @@ from app.services.graph_db import run_query_for_case, run_write
 # instance the FIRST call after idle spends longer than that on the TLS
 # handshake and routing-table fetch, so it fails and the next one succeeds.
 # Rather than change that shared setting, absorb the cold start here.
-_PROJECTION_ATTEMPTS = 4
+# Aura pauses a free instance when idle; waking it can take longer than the
+# 3-second budget graph_db allows, so a read after a quiet period needs more
+# than a couple of tries before it is honest to call the database unreachable.
+_PROJECTION_ATTEMPTS = 6
 
 
 def _with_retry(operation, *args):
@@ -287,7 +290,12 @@ def fetch_case_graph(case_id: str) -> dict[str, Any]:
                    type(r) AS relationship,
                    coalesce(r.count, 1)        AS count,
                    coalesce(r.total_amount, 0) AS total_amount,
-                   r.confidence                AS confidence
+                   coalesce(r.total_duration, 0) AS total_duration,
+                   r.first_seen                AS first_seen,
+                   r.last_seen                 AS last_seen,
+                   r.confidence                AS confidence,
+                   r.origin                    AS origin,
+                   r.basis                     AS basis
             """,
         )
     except Exception as exc:

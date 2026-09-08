@@ -13,7 +13,12 @@ from dotenv import load_dotenv
 
 # The project .env is the explicit backend configuration.  Override inherited
 # shell values so a rotated key is not silently shadowed by a stale process env.
-load_dotenv(override=True)
+# override=False so a real environment variable beats the checked-in .env.
+# This matters for SENTINEL_DATA_MODE: a deployment against real records sets
+# SENSITIVE in its environment, and a stale .env saying SYNTHETIC must not be
+# able to silently unmask identifiers. Values absent from the environment are
+# still filled in from .env as before.
+load_dotenv(override=False)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

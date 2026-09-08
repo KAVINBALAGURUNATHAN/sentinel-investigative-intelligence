@@ -123,30 +123,12 @@ export function decisionLabel(decision) {
 
 // ── Statistics, in words ──────────────────────────────────────────────────
 
-/**
- * Lift expressed the way it should be said out loud. "17.3× more often than
- * expected" means nothing to most readers; anchoring it to the subject's own
- * history does.
- */
-export function unusualnessPhrase(lift) {
-  if (lift == null) return 'Not measured'
-  if (lift >= 10) return `${round(lift)}× more often than this subject's own history`
-  if (lift >= 3) return `${round(lift)}× more often than expected`
-  if (lift >= 1.5) return `Somewhat more often than expected (${round(lift)}×)`
-  return 'About as often as expected'
-}
-
 export function confidencePhrase(pValue) {
   if (pValue == null) return 'Not tested'
   if (pValue < 0.001) return 'Very unlikely to be coincidence (p < 0.001)'
   if (pValue < 0.01) return `Unlikely to be coincidence (p = ${pValue.toFixed(3)})`
   if (pValue < 0.05) return `Possibly not coincidence (p = ${pValue.toFixed(3)})`
   return `Could easily be coincidence (p = ${pValue.toFixed(2)})`
-}
-
-export function pValueText(p) {
-  if (p == null) return '—'
-  return p < 0.001 ? 'p < 0.001' : `p = ${p.toFixed(3)}`
 }
 
 // ── Formatting ────────────────────────────────────────────────────────────
@@ -157,22 +139,6 @@ export function formatAmount(amount, currency = 'INR') {
   if (Number.isNaN(value)) return null
   const symbol = currency === 'INR' ? '₹' : ''
   return `${symbol}${value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-}
-
-export function formatClock(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime())
-    ? '—'
-    : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-}
-
-export function formatDate(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime())
-    ? '—'
-    : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
 export function formatGap(fromIso, toIso) {
@@ -186,9 +152,6 @@ export function formatGap(fromIso, toIso) {
   return hours < 24 ? `${hours} hr later` : `${Math.round(hours / 24)} days later`
 }
 
-function round(value) {
-  return Number(value).toFixed(1).replace(/\.0$/, '')
-}
 
 function titleCase(value) {
   return String(value || '')

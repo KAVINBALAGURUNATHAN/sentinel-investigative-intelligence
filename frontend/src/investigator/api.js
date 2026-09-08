@@ -93,6 +93,18 @@ export const api = {
   benchmark: (permutations = 200) =>
     request(`/validation/benchmark?permutations=${permutations}`),
 
+  relationship: (caseId, source, target, relationship) =>
+    request(`/cases/${encodeURIComponent(caseId)}/relationship`
+      + `?source=${encodeURIComponent(source)}`
+      + `&target=${encodeURIComponent(target)}`
+      + (relationship ? `&relationship=${encodeURIComponent(relationship)}` : '')),
+
+  search: (q, caseId) =>
+    request(`/search?q=${encodeURIComponent(q)}`
+      + (caseId ? `&case_id=${encodeURIComponent(caseId)}` : '')),
+
+  displayPolicy: () => request('/system/display-policy'),
+
   reportPreview: caseId =>
     request(`/cases/${encodeURIComponent(caseId)}/report/preview`),
   reportUrl: caseId => `${V1}/cases/${encodeURIComponent(caseId)}/report`,

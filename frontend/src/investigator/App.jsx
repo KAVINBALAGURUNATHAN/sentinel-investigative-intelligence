@@ -10,10 +10,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import './theme.css'
 import { Icon, useApi } from './ui.jsx'
+import { Toasts } from './feedback.jsx'
 import { api } from './api.js'
 import {
   Alerts, Cases, Dashboard, Entities, EntityDetail, Evidence, Ingestion,
-  Network, Patterns, Reports, Timeline, Validation,
+  Network, Patterns, Reports, SearchResults, Timeline, Validation,
 } from './pages.jsx'
 
 const NAV = [
@@ -88,12 +89,15 @@ export default function App() {
   const page = (() => {
     const shared = { caseId, onNavigate: go, onOpenEntity: openEntity, onOpenEvidence: openEvidence }
     switch (route.page) {
+      case 'search': return <SearchResults term={route.param}
+        onNavigate={go} onOpenEntity={openEntity} onOpenEvidence={openEvidence}
+        onSelectCase={setCaseId} />
       case 'cases': return <Cases caseId={caseId} onSelectCase={setCaseId} onNavigate={go} />
       case 'entities': return <Entities {...shared} onSelectCase={setCaseId} />
       case 'entity': return <EntityDetail {...shared} entityId={route.param} />
-      case 'network': return <Network {...shared} />
+      case 'network': return <Network {...shared} focusEntity={route.param} />
       case 'timeline': return <Timeline {...shared} />
-      case 'patterns': return <Patterns caseId={caseId} />
+      case 'patterns': return <Patterns {...shared} />
       case 'alerts': return <Alerts {...shared} />
       case 'evidence': return <Evidence {...shared} eventId={route.param} />
       case 'ingestion': return <Ingestion caseId={caseId} />
@@ -120,11 +124,10 @@ export default function App() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             onKeyDown={e => {
+              // Guessing the record kind from its prefix silently sent people to
+              // the wrong page. Search now shows what actually matched.
               if (e.key !== 'Enter' || !search.trim()) return
-              const term = search.trim()
-              go(/^(E|EV)-/i.test(term) && term.includes('-') && term.length > 6
-                ? 'evidence' : 'entity', term)
-              setSearch('')
+              go('search', search.trim())
             }}
           />
         </div>
@@ -187,6 +190,7 @@ export default function App() {
           {page}
         </main>
       </div>
+      <Toasts />
     </div>
   )
 }

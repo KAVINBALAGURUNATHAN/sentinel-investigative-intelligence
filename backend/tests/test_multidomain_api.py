@@ -147,11 +147,46 @@ def test_timeline_excludes_quarantined_by_default(ingested):
     assert all(e["quarantined"] is False for e in body["events"])
 
 
-def test_identifiers_are_masked_in_responses(ingested):
+def test_synthetic_mode_shows_identifiers_in_full(ingested):
+    """
+    Benchmark data carries no real person's number, and an investigator
+    demonstrating resolution has to be able to read the values.
+    """
+    body = ingested.get("/api/v1/cases/CASE_002/timeline?limit=20").json()
+    shown = [e["actor"] for e in body["events"] if e["actor"]]
+    assert shown, "no identifiers returned at all"
+    assert not any("*" in value for value in shown), "masked under SYNTHETIC mode"
+
+
+def test_sensitive_mode_masks_identifiers_everywhere(ingested, monkeypatch):
+    """
+    The protection must still work. Flipping one setting masks every response
+    path, which is what a deployment against real records relies on.
+    """
+    monkeypatch.setenv("SENTINEL_DATA_MODE", "SENSITIVE")
+
     body = ingested.get("/api/v1/cases/CASE_002/timeline?limit=20").json()
     for event in body["events"]:
         if event["actor"]:
-            assert "*" in event["actor"], "raw identifier leaked"
+            assert "*" in event["actor"], "raw identifier leaked in SENSITIVE mode"
+
+    profile = ingested.get("/api/v1/entities/E-104?case_id=CASE_002").json()
+    for identifier in profile["identifiers"]:
+        assert "*" in identifier["value"], "raw identifier leaked in SENSITIVE mode"
+
+    registry = ingested.get("/api/v1/cases/CASE_002/entities").json()
+    for row in registry["entities"]:
+        if row["kind"] == "IDENTIFIER":
+            assert "*" in row["id"], "raw identifier leaked in SENSITIVE mode"
+
+
+def test_unknown_data_mode_fails_safe_to_masked(monkeypatch):
+    """An unrecognised setting must not be read as permission to show values."""
+    from app import config
+
+    monkeypatch.setenv("SENTINEL_DATA_MODE", "probably-fine")
+    assert config.data_mode() == config.SENSITIVE
+    assert config.identifiers_visible() is False
 
 
 # ── entity resolution ─────────────────────────────────────────────────────
@@ -163,11 +198,31 @@ def test_entities_resolve_across_domains(ingested):
     assert {"CALL", "TRANSFER"} <= set(profile["activity"])
 
 
-def test_entity_identifiers_are_masked(ingested):
+def test_entity_identifiers_are_readable_in_synthetic_mode(ingested):
     profile = ingested.get("/api/v1/entities/E-104?case_id=CASE_002").json()
     assert profile["identifiers"]
     for identifier in profile["identifiers"]:
-        assert "*" in identifier["value_masked"]
+        assert "*" not in identifier["value"], "masked under SYNTHETIC mode"
+
+
+def test_every_identifier_type_is_shown_in_full(ingested):
+    """No type may quietly remain masked while the others are readable."""
+    registry = ingested.get("/api/v1/cases/CASE_002/entities").json()
+    by_type = {}
+    for row in registry["entities"]:
+        if row["kind"] == "IDENTIFIER":
+            by_type.setdefault(row["type"], []).append(row["id"])
+    assert by_type, "no identifiers resolved"
+    for itype, values in by_type.items():
+        for value in values:
+            assert "*" not in value, f"{itype} still masked"
+
+
+def test_display_policy_is_stated(ingested):
+    policy = ingested.get("/api/v1/system/display-policy").json()
+    assert policy["data_mode"] == "SYNTHETIC"
+    assert policy["identifiers_visible"] is True
+    assert policy["explanation"]
 
 
 def test_unknown_entity_returns_404(ingested):
