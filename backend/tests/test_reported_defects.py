@@ -380,3 +380,136 @@ def test_the_synthetic_cdr_dataset_still_maps_cleanly():
     events = normalize_csv_bytes("cdr", (DATA / "cdr.csv").read_bytes())
     assert events
     assert not [e for e in events if e.flags.event_type_unmapped]
+
+
+# ── The graph page: blank because it depended on a derived copy ───────────
+#
+# The Network page read only Neo4j. With the graph database paused, every case
+# rendered an empty canvas after a 35-second wait -- while the relationships it
+# needed sat intact in SQLite, which answered the equivalent query in
+# milliseconds. Neo4j holds a projection of those facts, not the facts, so the
+# page had been made to depend on the copy rather than the source.
+
+def test_the_graph_is_served_from_the_event_store_when_neo4j_is_down(client):
+    """
+    Whatever the graph database is doing, a case with relationships must
+    produce a graph. This is the defect that blanked the page.
+    """
+    body = client.get("/api/v1/cases/CASE_002/graph").json()
+    assert body["status"] == "OK"
+    assert body["nodes"], "a case with resolved entities must produce nodes"
+    assert body["edges"]
+
+
+def test_a_fallback_graph_says_that_it_is_one(client):
+    """
+    A rebuilt graph and a live projection must be distinguishable. Presenting
+    a fallback as the live graph would hide that the projection is stale.
+    """
+    body = client.get("/api/v1/cases/CASE_002/graph").json()
+    assert body["source"] in {"NEO4J", "EVENT_STORE"}
+    if body["source"] == "EVENT_STORE":
+        assert body["degraded"] is True
+        assert body["reason"]
+        assert "graph/build" in body["retry"]
+    else:
+        assert not body.get("degraded")
+
+
+def test_the_fallback_graph_matches_what_would_be_projected():
+    """
+    The fallback reuses the projection's own payload builders, so the two
+    cannot drift. Asserted directly, because a second graph model that
+    disagreed with the first would be worse than no fallback at all.
+    """
+    from app.services import event_store as store
+    from app.services.graph_projection import (
+        build_activity_payload, build_local_graph, build_ownership_payload)
+
+    with store.connect() as conn:
+        events = store.load_unified_events(conn, "CASE_002")
+        identifiers = [dict(r) for r in conn.execute(
+            "SELECT entity_id, identifier_type, identifier_value, confidence, "
+            "origin, basis FROM entity_identifiers WHERE case_id = ?",
+            ("CASE_002",)).fetchall()]
+
+    ownership = build_ownership_payload(identifiers)
+    activity = build_activity_payload(events)
+    graph = build_local_graph("CASE_002", events, identifiers)
+
+    assert len(graph["edges"]) == len(ownership) + len(activity)
+    # Every edge endpoint is a node; a dangling edge would draw as a stray line.
+    ids = {n["id"] for n in graph["nodes"]}
+    for edge in graph["edges"]:
+        assert edge["source"] in ids and edge["target"] in ids
+
+
+def test_activity_edges_account_for_every_two_ended_event():
+    """
+    Edges are aggregates, so the counts on them must add back up to the events
+    they came from. An edge whose weight does not reconcile is a figure an
+    investigator cannot check.
+    """
+    from app.services import event_store as store
+    from app.services.graph_projection import (
+        ACTIVITY_RELATIONSHIPS, build_activity_payload)
+
+    with store.connect() as conn:
+        events = store.load_unified_events(conn, "CASE_002")
+
+    countable = [
+        e for e in events
+        if not e.quarantined and e.actor and e.target
+        and e.actor.value and e.target.value
+        and ACTIVITY_RELATIONSHIPS.get(
+            getattr(e.event_type, "value", e.event_type))
+    ]
+    activity = build_activity_payload(events)
+    assert sum(a["count"] for a in activity) == len(countable)
+
+
+def test_the_graph_read_does_not_wait_on_an_unreachable_database(client):
+    """
+    Retrying a read against a database that is down cannot make it succeed; it
+    only delays the answer. The full ladder spent 35 seconds returning the same
+    empty result it could have returned at once.
+    """
+    import time
+
+    client.get("/api/v1/cases/CASE_002/graph")  # absorb any cold-start attempt
+    start = time.time()
+    client.get("/api/v1/cases/CASE_003/graph")
+    assert time.time() - start < 10, "graph read is retrying a dead connection"
+
+
+def test_a_case_with_no_relationships_still_answers_cleanly(client):
+    """An empty graph must be an empty graph, not an error."""
+    body = client.get("/api/v1/cases/CASE_006/graph").json()
+    assert body["status"] == "OK"
+    assert body["nodes"] == [] and body["edges"] == []
+
+
+def test_an_empty_projection_falls_back_rather_than_blanking(client):
+    """
+    The graph database answering successfully with nothing is a stale or
+    never-built projection, not an empty case. It blanked the page exactly as
+    an outage did, while telling the investigator "graph not yet projected"
+    about data that was in the store the whole time.
+
+    (conftest mocks Neo4j to return no rows, so this is the path under test
+    here -- which is what surfaced the gap in the first place.)
+    """
+    body = client.get("/api/v1/cases/CASE_002/graph").json()
+    assert body["nodes"], "an unprojected case must still render from the store"
+    assert body["fallback_reason"] in {"UNREACHABLE", "NOT_PROJECTED"}
+
+
+def test_an_empty_case_is_not_reported_as_degraded(client):
+    """
+    A case with no relationships is empty, not broken. Flagging it as degraded
+    would send an investigator chasing infrastructure over a case with nothing
+    in it.
+    """
+    body = client.get("/api/v1/cases/CASE_006/graph").json()
+    assert body["nodes"] == []
+    assert body["degraded"] is False

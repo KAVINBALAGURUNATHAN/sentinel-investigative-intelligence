@@ -36,7 +36,12 @@ from app.services.case_report import (
     generate_investigation_report,
 )
 from app.services.entity_resolution import resolve_case
-from app.services.graph_projection import clear_case, fetch_case_graph, project_case
+from app.services.graph_projection import (
+    build_local_graph,
+    clear_case,
+    fetch_case_graph,
+    project_case,
+)
 from app.services.normalizers import NORMALIZERS, ingestion_summary, normalize_csv_bytes
 
 log = logging.getLogger("sentinel.multidomain")
@@ -563,8 +568,64 @@ def build_case_graph(case_id: str) -> dict[str, Any]:
 
 @router.get("/cases/{case_id}/graph")
 def read_case_graph(case_id: str) -> dict[str, Any]:
-    """The projected Neo4j graph, typed for D3."""
-    return fetch_case_graph(case_id)
+    """
+    The case graph, typed for D3.
+
+    Neo4j first, because a projected graph is the one an investigator may have
+    navigated in the browser. But Neo4j holds a *derived copy* of relationships
+    that already exist in the event store, so when it is unreachable there is
+    no reason to show nothing: the same graph is rebuilt from SQLite using the
+    very functions that generate the projection.
+
+    The response always says which source produced it, and a fallback graph
+    says plainly why. An investigator must never be unable to tell a graph read
+    from the live projection apart from one rebuilt locally — nor either of
+    them apart from a case that genuinely has no relationships.
+    """
+    graph = fetch_case_graph(case_id)
+    if graph.get("status") == "OK" and graph.get("nodes"):
+        graph["source"] = "NEO4J"
+        return graph
+
+    # Two ways to arrive here, and they need different explanations.
+    #
+    #   UNREACHABLE  the graph database did not answer.
+    #   NOT_PROJECTED  it answered, and holds nothing for this case. That is a
+    #                  stale or never-built projection, not an empty case --
+    #                  and it blanked the page just as thoroughly, while
+    #                  telling the investigator only "graph not yet projected"
+    #                  about data that was sitting in the store the whole time.
+    unreachable = graph.get("status") != "OK"
+    reason = (graph.get("reason") if unreachable
+              else "The graph database holds no projection for this case.")
+
+    with store.connect() as conn:
+        events = store.load_unified_events(conn, case_id)
+        identifiers = conn.execute(
+            "SELECT entity_id, identifier_type, identifier_value, confidence, "
+            "origin, basis FROM entity_identifiers WHERE case_id = ?",
+            (case_id,)).fetchall()
+
+    local = build_local_graph(case_id, events, [dict(r) for r in identifiers])
+    log.warning("graph fallback case=%s unreachable=%s reason=%s nodes=%d edges=%d",
+                case_id, unreachable, reason,
+                len(local["nodes"]), len(local["edges"]))
+    return {
+        "status": "OK",
+        "source": "EVENT_STORE",
+        "case_id": case_id,
+        **local,
+        # A case that genuinely holds no relationships is not degraded; it is
+        # simply empty, and saying otherwise would send an investigator
+        # chasing infrastructure over a case with nothing in it.
+        "degraded": bool(local["nodes"]),
+        "fallback_reason": "UNREACHABLE" if unreachable else "NOT_PROJECTED",
+        "reason": reason,
+        "note": ("This graph was rebuilt from the event store. It contains the "
+                 "same resolved entities and observed relationships that would "
+                 "be projected; layout positions are not restored."),
+        "retry": f"POST /api/v1/cases/{case_id}/graph/build",
+    }
 
 
 @router.delete("/cases/{case_id}/graph")

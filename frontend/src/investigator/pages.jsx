@@ -1563,8 +1563,17 @@ const NODE_KINDS = [
   { id: 'UpiHandle', label: 'UPI handles' },
 ]
 
-// Default view: people and the phones that connect them. Everything else off.
-const DEFAULT_KINDS = new Set(['Person', 'Phone'])
+// Default view: people, and the node types the link groups shown by default
+// actually need.
+//
+// This used to be a hardcoded {Person, Phone} while 'financial' was on by
+// default -- so transfers were switched on with bank accounts switched off,
+// and the graph showed no financial activity until the investigator found the
+// right toggle. That is the exact failure the note under REL_GROUPS warns
+// about, so the initial state is derived from the same rule rather than
+// restating it and getting it wrong.
+const DEFAULT_GROUPS = ['communication', 'financial', 'ownership']
+const DEFAULT_KINDS = new Set(['Person'])
 
 /*
   `needs` is the node type each relationship actually connects. Financial edges
@@ -1584,6 +1593,12 @@ const REL_GROUPS = [
   { id: 'ownership', label: 'Ownership', rels: ['OWNS', 'USES', 'IDENTIFIES'],
     needs: [] },
 ]
+// Populated here because REL_GROUPS is declared after DEFAULT_KINDS.
+DEFAULT_GROUPS.forEach(id => {
+  const group = REL_GROUPS.find(g => g.id === id)
+  ;(group?.needs || []).forEach(kind => DEFAULT_KINDS.add(kind))
+})
+
 const OWNERSHIP_RELS = ['OWNS', 'USES', 'IDENTIFIES']
 
 const HOPS = [
@@ -1843,6 +1858,34 @@ function NetworkOverview({ graph, shown, metrics, people, caseInfo }) {
   )
 }
 
+
+/**
+ * Say where this graph came from when it did not come from the graph database.
+ *
+ * The graph is normally read from Neo4j. When Neo4j is unreachable the backend
+ * rebuilds the same graph from the event store rather than showing nothing --
+ * the relationships are the same, because Neo4j only ever held a projection of
+ * them. But an investigator must be able to tell the two apart: a rebuilt
+ * graph has no saved layout and reflects the store as of this moment, so
+ * saying nothing would present a fallback as the live projection.
+ */
+function GraphSourceNotice({ graph, onRebuild, building }) {
+  if (!graph?.degraded) return null
+  return (
+    <p className="crow-note" style={{ margin: '0 0 10px' }}>
+      <b>Rebuilt from the event store.</b> The graph database is not reachable
+      {graph.reason ? ` (${graph.reason})` : ''}, so this graph was rebuilt from
+      the stored records. It shows the same resolved entities and observed
+      relationships; saved layout positions are not restored.{' '}
+      <button className="btn" onClick={onRebuild} disabled={building}
+        style={{ marginLeft: 4 }}>
+        {building ? 'Retrying…' : 'Retry projection'}
+      </button>
+    </p>
+  )
+}
+
+
 /* ── Timeline view of the same data ────────────────────────────────────── */
 
 function GraphTimeline({ caseId, focusRoot, onOpenEvidence }) {
@@ -1887,8 +1930,7 @@ export function Network({ caseId, onOpenEntity, onOpenEvidence, onNavigate, focu
   const [hops, setHops] = useState('0')
   const [view, setView] = useState('graph')
   const [kinds, setKinds] = useState(() => new Set(DEFAULT_KINDS))
-  const [groups, setGroups] = useState(
-    () => new Set(['communication', 'financial', 'ownership']))
+  const [groups, setGroups] = useState(() => new Set(DEFAULT_GROUPS))
   const [selected, setSelected] = useState(null)
   const [edge, setEdge] = useState(null)
   const [building, setBuilding] = useState(false)
@@ -2106,6 +2148,7 @@ export function Network({ caseId, onOpenEntity, onOpenEvidence, onNavigate, focu
             </div>
           ) : (
             <div style={{ height: 620 }}>
+              <GraphSourceNotice graph={graph.data} onRebuild={build} building={building} />
               <NetworkGraph graph={shown} filters={{ query }} selected={selected?.id} focusId={focusRoot}
                 onSelect={n => { setSelected(n); setEdge(null) }}
                 onEdgeSelect={e => { setEdge(e); setSelected(null) }} />

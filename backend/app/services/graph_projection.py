@@ -276,12 +276,86 @@ def project_case(case_id: str, events: Sequence[Any],
     }
 
 
+def build_local_graph(case_id: str, events: Sequence[Any],
+                      identifiers: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """
+    The case graph, computed from the event store, in the shape Neo4j returns.
+
+    WHY THIS EXISTS. Neo4j holds a *projection* — a derived copy of facts that
+    already live in SQLite. Making the Network page depend on it meant that a
+    paused or unreachable graph database blanked a view whose entire content
+    was sitting locally, fully intact. The dependency was on the copy, not on
+    the source.
+
+    This builds the same graph from the source. It deliberately reuses
+    build_ownership_payload and build_activity_payload — the very functions
+    that generate the Neo4j writes — so the two cannot drift apart: whatever
+    would have been projected is exactly what is drawn. Node and edge keys
+    match fetch_case_graph() field for field, so the UI needs no second shape.
+
+    This is not a second graph model. It is the same model, read from the side
+    that never went down.
+    """
+    ownership = build_ownership_payload(identifiers)
+    activity = build_activity_payload(events)
+
+    nodes: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add_node(label: str, node_id: str, identifier_type: str | None) -> None:
+        if not node_id:
+            return
+        existing = nodes.get((label, node_id))
+        if existing is None:
+            nodes[(label, node_id)] = {"label": label, "id": node_id,
+                                       "identifier_type": identifier_type}
+        elif existing.get("identifier_type") is None:
+            existing["identifier_type"] = identifier_type
+
+    edges: list[dict[str, Any]] = []
+
+    # Ownership layer: Person -[OWNS/USES]-> Identifier. A resolution
+    # conclusion, not an observation, and carries its basis rather than counts.
+    for row in ownership:
+        add_node("Person", row["entity_id"], None)
+        add_node(row["label"], row["value"], row["identifier_type"])
+        edges.append({
+            "source": row["entity_id"], "target": row["value"],
+            "relationship": row["relationship"],
+            "count": 1, "total_amount": 0, "total_duration": 0,
+            "first_seen": None, "last_seen": None,
+            "confidence": row["confidence"], "origin": row["origin"],
+            "basis": row["basis"],
+        })
+
+    # Activity layer: aggregated observations between identifiers.
+    for row in activity:
+        add_node(row["source_label"], row["source"], None)
+        add_node(row["target_label"], row["target"], None)
+        edges.append({
+            "source": row["source"], "target": row["target"],
+            "relationship": row["relationship"],
+            "count": row["count"],
+            "total_amount": row["total_amount"],
+            "total_duration": row["total_duration"],
+            "first_seen": row["first_seen"], "last_seen": row["last_seen"],
+            "confidence": None, "origin": None, "basis": None,
+        })
+
+    return {"nodes": list(nodes.values()), "edges": edges}
+
+
 def fetch_case_graph(case_id: str) -> dict[str, Any]:
     """
     Read the projected graph back for D3.
 
     Returns typed nodes and edges so the UI can distinguish a CALL from a
     TRANSFER, and a Person from a BankAccount.
+
+    attempts=1. This is a read on the request path with a person waiting on it.
+    Retrying a read against a database that is down cannot make it succeed; it
+    only delays the bad news — the full ladder spent 35 seconds before
+    returning the same empty result it could have returned at once. The
+    endpoint falls back to the event store, and it should get there quickly.
     """
     try:
         nodes = _with_retry(
@@ -293,6 +367,7 @@ def fetch_case_graph(case_id: str) -> dict[str, Any]:
                    coalesce(n.entity_id, n.value) AS id,
                    n.identifier_type AS identifier_type
             """,
+            attempts=1,
         )
         edges = _with_retry(
             run_query_for_case,
@@ -311,6 +386,7 @@ def fetch_case_graph(case_id: str) -> dict[str, Any]:
                    r.origin                    AS origin,
                    r.basis                     AS basis
             """,
+            attempts=1,
         )
     except Exception as exc:
         return {"status": "UNAVAILABLE", "case_id": case_id,
