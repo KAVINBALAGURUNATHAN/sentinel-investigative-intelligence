@@ -4,6 +4,14 @@ Decision-support software for multi-source investigative analysis: call records,
 internet session records, banking transactions and social activity, correlated
 into one timeline, one entity graph and one statistically-tested set of leads.
 
+**Every finding is produced by a deterministic statistical method.** Detection,
+scoring and decisions are permutation testing, empirical p-values,
+Benjamini-Hochberg false-discovery control and a per-subject activity baseline —
+no machine-learned model, no black box, nothing that cannot be re-derived by
+hand from the stored records. Seeded throughout: identical input reproduces an
+identical p-value, which is a requirement for evidence rather than a
+convenience.
+
 **Synthetic data only.** Every dataset in this repository is generated. No real
 personal data is present, and none may be added.
 
@@ -27,19 +35,33 @@ carry its own counter-argument (see *Exculpatory context* below).
 
 ---
 
-## Origin and attribution
+## What was built here
 
-This project began as a fork of
+The multi-source investigative platform is the work in this repository:
+
+| Built here | Where |
+|---|---|
+| Unified event store and schema | `backend/app/services/event_store.py` |
+| Four domain normalizers (CDR / IPDR / banking / social) | `backend/app/services/normalizers.py` |
+| Deterministic entity resolution | `backend/app/services/entity_resolution.py` |
+| CCC statistical engine — permutation test, lift, empirical p-value | `backend/app/analytics/ccc_engine.py` |
+| Benjamini-Hochberg FDR correction, written from the definition | `backend/app/analytics/fdr.py` |
+| Per-subject activity baseline and established-routine guard | `backend/app/analytics/baseline.py` |
+| Structural bridge detection over NetworkX | `backend/app/analytics/network_metrics.py` |
+| Two-layer Neo4j projection and its event-store fallback | `backend/app/services/graph_projection.py` |
+| Timeline, evidence and provenance API | `backend/app/api/multidomain.py` |
+| Investigator interface (React + D3) | `frontend/src/investigator/` |
+
+### Prior work this builds on
+
+The repository started from
 [MADHANSA147/sentinel](https://github.com/MADHANSA147/sentinel), a hackathon MVP
-for child-protection digital forensics over messaging data. That codebase
-contributed the LangGraph agent pipeline, the SHA-256 execution ledger, the
-court-pack PDF export and the quarantine-not-drop ingestion discipline, all of
-which remain here.
-
-The multi-domain work (CDR / IPDR / banking / social), the unified event store,
-entity resolution, the CCC statistical engine, the Neo4j projection and the
-investigator interface were built on top of it. The original messaging pipeline
-is preserved and still runs.
+for child-protection forensics over messaging data. Four things from that
+codebase remain in use and are credited accordingly: the 12-node LangGraph agent
+pipeline (`backend/app/agents/`), the SHA-256 chained execution ledger
+(`backend/app/services/ledger.py`), the court-pack PDF export, and the
+quarantine-not-drop ingestion discipline. That messaging pipeline is preserved
+and still runs, kept deliberately separate from the multi-domain path.
 
 ---
 
@@ -135,10 +157,71 @@ done
 ### Tests
 
 ```bash
-cd backend && pytest -q          # 151 passed, 2 skipped
+cd backend && pytest -q          # 271 passed, 4 skipped
 ```
 
 The suite mocks Neo4j (`tests/conftest.py`), so it runs fully offline.
+
+---
+
+## The two stores
+
+Not redundancy — each answers the question the other answers badly.
+
+| Question | Answered by | Why not the other |
+|---|---|---|
+| How many transfers over ₹50,000 in March? | **SQLite** | Cypher aggregation over 100k rows is slow and awkward |
+| Which subjects link these two networks? | **Neo4j** | Recursive SQL for variable-depth paths is unmaintainable |
+| Every event for this subject, in order | **SQLite** | The timeline is an indexed row scan, not a traversal |
+| What file and row did this event come from? | **SQLite** | Provenance is a column on the row, not an edge |
+
+**Neo4j holds a projection, never the source.** Everything it contains is
+derived from the event store, so it can be rebuilt at any time. When the graph
+database is unreachable the network view is reconstructed from SQLite using the
+same functions that generate the projection writes — the graph cannot drift from
+what would have been projected — and the response is labelled `EVENT_STORE` with
+a visible banner. An outage costs navigation, never evidence.
+
+### The graph model has two layers, kept apart
+
+| Layer | Edges | Meaning |
+|---|---|---|
+| Ownership | `OWNS`, `USES`, `IDENTIFIES` | A **conclusion** of entity resolution. Dashed. Carries confidence and basis. |
+| Activity | `CALLED`, `TRANSFERRED`, `CONNECTED_FROM`, … | An **observation** from source records. Solid. Aggregated with counts. |
+
+A call between two handsets is a fact from the CDR. "These two people spoke" is
+a conclusion that depends on the resolution being correct. Collapsing both into
+one edge type would let an inference be presented with the authority of an
+observation; in court that difference is the case. The relationship API labels
+every edge `RESOLUTION` or `OBSERVATION` accordingly.
+
+---
+
+## Timeline construction
+
+One chronology across all four sources, because they are one table:
+
+```sql
+SELECT * FROM events
+ WHERE case_id = ?              -- scoped to one investigation
+   AND quarantined = 0          -- invalid rows never reach analysis
+   AND (event_type IN ?)        -- optional type filter
+   AND (actor_entity = ? OR target_entity = ?)
+   AND timestamp BETWEEN ? AND ?
+ ORDER BY timestamp
+```
+
+**The pattern window must not shrink the timeline.** The CCC engine tests
+sequences inside a 30-minute window; that window belongs to the test, not to the
+chronology. If the timeline filtered by it, an investigator would see only
+events that fell inside a detected pattern and would have no way to know what
+else happened that day — the chronology would silently become a summary of the
+findings. The full event list is always loaded; filters narrow the view, never
+the query behind it.
+
+Every row carries its `event_id`, which resolves through the evidence API to the
+batch, the source file, the row number within it, and the SHA-256 of the bytes
+the file arrived as.
 
 ---
 
@@ -156,17 +239,20 @@ normally do this?"**
    across every pattern and subject tested.
 5. Apply the exculpatory guard before deciding.
 
-No LLM is involved in any of this. The numbers are reproducible.
+Nothing in this path is learned, fitted or inferred by a model. The whole
+computation is arithmetic over the subject's own stored events, seeded so it
+reproduces exactly — enforced by a test that fails if `backend/app/analytics/`
+ever imports a model client.
 
 ### Exculpatory context
 
 A finding must survive its own counter-argument. The benchmark contains two
 cases with the *same* pattern shape:
 
-| Case | Pattern | Lift | Decision |
-|---|---|---|---|
-| CASE_002 | `CALL → TRANSFER → SOCIAL` | 17.1× | **REVIEW** |
-| CASE_003 | `CALL → TRANSFER → SOCIAL` | **18.3×** | **NO_ACTION** |
+| Case | Pattern | Observed | Lift | q | Decision |
+|---|---|---|---|---|---|
+| CASE_002 | `CALL → TRANSFER → SOCIAL` | 18 | 15.7× | 0.000999 | **REVIEW** |
+| CASE_003 | `CALL → TRANSFER → SOCIAL` | 30 | **18.4×** | 0.000999 | **NO_ACTION** |
 
 CASE_003 has the *higher* lift and produces *no alert*, because the behaviour is
 that subject's established 30-day routine. Statistical extremity alone is not a
@@ -216,11 +302,20 @@ itself:
   empirically calibrated.
 - **The exculpatory guard is a heuristic** (established-routine detection), not
   a proof of innocence.
-- **Report export is not wired to the multi-domain store.** The court-pack PDF
-  reads the original messaging schema; the Reports page says so rather than
-  producing a misleading document.
 - **Entity resolution is deterministic**, based on shared identifiers. It has no
-  probabilistic matching and will miss links that require fuzzy inference.
+  probabilistic matching and will miss links that require fuzzy inference. This
+  is a deliberate trade: a resolution an investigator cannot re-derive by hand
+  is one that cannot be defended.
+- **The graph database is optional and currently paused.** The network view is
+  served from the event store and labelled as such. The live-projection path is
+  covered by code and idempotency tests rather than against a running instance.
+- **Dense graphs hide some edge labels.** To guarantee no label overlaps a node
+  or another label, labels are dropped by edge weight once the layout settles —
+  about 36% of them on the densest synthetic case. Every edge still shows its
+  count on hover and click.
+- **CDR `call_type` carries two vocabularies** (modality and direction) across
+  operators. Both are read; an unrecognised code quarantines the row rather than
+  being guessed into an event type.
 
 ---
 
