@@ -1,8 +1,25 @@
 # SENTINEL — Architecture Summary
 
-**Purpose of this document:** a factual map of the codebase as it exists today, written before any
-changes, to support a decision about reusing it as the base for a Chandigarh Police investigative
-intelligence platform (CDR / IPDR / banking / social).
+> ## ⚠ Historical document — superseded
+>
+> This is a **point-in-time audit of the inherited codebase**, taken at commit
+> `d043bc9` on 2026-09-05, *before* the multi-source platform was built. It is
+> kept because it records what was inherited and why the decisions that followed
+> were made — not because it describes the system as it stands.
+>
+> **It is wrong about the current architecture.** Most notably, §1 states there
+> is no relational database; there is now a SQLite event store
+> (`backend/app/services/event_store.py`) and it is the record of truth for
+> every analytical surface.
+>
+> **For the current system, read [README.md](README.md)**, plus
+> [backend/README.md](backend/README.md) and
+> [frontend/README.md](frontend/README.md).
+
+**Purpose of this document:** a factual map of the codebase as it existed at the
+commit named below, written before any changes, to support a decision about
+reusing it as the base for a Chandigarh Police investigative intelligence
+platform (CDR / IPDR / banking / social).
 
 Nothing in this document is a proposal. Findings only. Every claim below was read from source.
 

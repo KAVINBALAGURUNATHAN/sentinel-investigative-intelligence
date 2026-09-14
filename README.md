@@ -319,6 +319,16 @@ itself:
 
 ---
 
+## Further reading
+
+| Document | Covers |
+|---|---|
+| [backend/README.md](backend/README.md) | Service layout, data invariants, endpoints, environment |
+| [frontend/README.md](frontend/README.md) | Interface structure and its display obligations |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Historical audit of the inherited codebase — superseded |
+
+---
+
 ## Repository layout
 
 ```
